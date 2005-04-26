@@ -1,0 +1,87 @@
+CHANGELOG
+
+Version 0.8, released 10-Mar-2005
+    
+    INCOMPATIBLE CHANGE: don't call on_current while we're constructing ourself - external code won't be able to 'see' us yet
+	Added constructor_done flag to indicate whether we have been returned to the calling code yet
+	You should manually call the on_current code immediately *after* the object constructor ... when your Gtk2::Ex::DBI object will be available
+    Added method of running external code before applying changes to the current record ( on_apply - similar to on_current )
+    Apply changes to the current record before requerying ( query method )
+    Properly handle empty recordsets in count method
+    Append primary key to sql_select if necessary in fetch_new_slice method
+    Added 'quiet' flag to silence warnings such as missing widgets
+    Added 'use strict' directive and fixed up issues this raised
+    Added demo application - a dream database ( distributed separately - see download page on website )
+    Use 'make dist' to create distributable package instead of manually creating archive - thanks Ofey
+    Updated website to make better use of space - also thanks to Ofey for suggestion to clean it up
+    
+Version 0.7, released 10-Feb-2005
+    
+    Rewrote 'insert into' syntax in 'apply' method to be more DB-neutral
+    Completed support for MS SQL server ( and most likely Sybase ... maybe even others ) via DBD::ODBC
+
+Version 0.6, released 18-Jan-2005
+
+    MAJOR CHANGE: Implemented selecting of partial recordsets ( slices ) instead of simply selecting the whole recordset at once
+        Dramatically improves performance on low-memory machines, and in cases of large recordsets
+    INCOMPATIBLE CHANGE: The min / max values that are passed to the record spinner are now the recordset position PLUS ONE
+        ( ie starts at 1 now instead of 0 )
+    Update the range of the record spinner when inserting / deleting
+    Added workaround for http://bugzilla.gnome.org/show_bug.cgi?id=156017
+    Added support for default values. TODO: Support for fetching default values from DB Server
+    Added support for Gtk2::CheckButton
+    Broke out last_insert_id functionality into it's own method
+    Fixed logic problem in 'move' method if there are no records ( don't try to move to position -1 )
+    Added ( dodgy ) workaround for http://bugzilla.gnome.org/show_bug.cgi?id=52372 - we bail out :)
+    Documentation additions / cleanups
+    Got website back online at http://entropy.homelinux.org after a large outage
+	( I was in Cambodia for a month, and someone stole my hostname after it expired )
+    
+Version 0.5, released 22-Nov-2004
+
+    Reformatted all indentation & removed a lot of whitespace ( big change, I know ). Now looks outstanding in ActiveState's Komodo :)
+    Removed attempted locking of fields if 'read_only' is set.
+	Only worked for a few widgets, and I don't see much point anyway - 'apply' method still honours 'read_only' status
+    Fixed support for Gtk2::TextView - now we connect to TextBuffer's 'changed' signal
+    Added support for DBI's last_insert_id() method. This brings us one step closer to supporting DB servers other than MySQL.
+	Still requires some *very* small additions ( eg last_insert_id() on Postgres requires some arguments to be passed )
+	Volunteers? I don't use Postgres
+    Added POD documentation - some formatting issues, not enough time to figure out what's up
+    
+Version 0.4, released 22-Oct-2004
+    
+    Fixed 2 *nasty* bugs in apply method that were preventing the fieldlist from being processed and applied to DB Server or in-memory recordset
+    Added 'delete' method
+    
+Version 0.3, released 14-Oct-2004
+    
+    Added DATE-ONLY support for Gnome2::DateEdit ( only tested with MySQL's yyyy-mm-dd format ... BEWARE !!! )
+    Added 'order by' support
+    'revert' method now deletes the current record from the *in-memory* recordset if we are currently inserting a new record
+    *** Added dependancy*** : Gtk2::Ex::Dialogs - used instead of my own ( admittedly dodgy ) msgbox() function
+    Added 'fieldlist' method, which returns a list of fields ( taken from the DB server )
+    'apply' and 'paint' methods now use $self->fieldlist which is far more robust than looking at the current position's fieldlist
+	( in some cases will only contain the primary key )
+    Removed dependance on 'stuff.pm'. Moved date_from_GtkCalendar and date_to_GtkCalendar functionality back into Gtk2::Ex::DBI ( maybe should be another package? )
+    Added ExtUtils::MakeMaker support for installation
+    
+Version 0.2, released 06-Sep-2004
+
+    Renamed from gtk2-gladexml_DBI_helper to Gtk2::Ex::DBI
+    Added support for Gtk2::TextView
+    Added missing event support for Gtk2::Calendar
+    More comments and documentation
+    Remove fieldlist requirement from 'new' method. Fieldlist is assembled on-the-fly
+    Fixed error if no on_current sub defined
+    Deal with NULL date values when painting form
+    Fixed bug where fields weren't getting their respective 'changed' signal connected if the initial query returned no results
+    Added initial support for calculated fields
+    Better handling of zero values ( don't use undef just because a zero is encountered )
+
+Version 0.1, released 04-Jul-2004
+
+    First Version :)
+    Basic querying
+    Form painting
+    Database updating
+    External callbacks

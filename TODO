@@ -1,0 +1,17 @@
+- Fetch default values from DB server
+    Is this possible? Is there anything in DBI that provides default values, or do we have to parse
+	the output of a 'show create table' statement ( MySQL only ) or something?
+
+- Possible workaround for Gnome2::DateEdit's insistance on always displaying a date?
+    Not sure what I'd do though
+
+- Adding support for more DB servers
+    - Postgres
+	last_insert_id doesn't currently work
+	Perhaps we can use 'select @@IDENTITY' if I can't make $dbh->last_insert_id work?
+
+    - Oracle: completely untested
+    
+- Demo app
+    Just don't have time at the moment...
+    

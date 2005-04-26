@@ -1,0 +1,8 @@
+Changelog.txt
+COPYRIGHT
+lib/Gtk2/Ex/DBI.pm
+Makefile.PL
+MANIFEST
+t/Gtk2-Ex-DBI.t
+TODO
+META.yml                                 Module meta-data (added by MakeMaker)
