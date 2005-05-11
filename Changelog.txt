@@ -1,5 +1,14 @@
 CHANGELOG
 
+Version 0.9, released 11-May-2005
+    
+    Add checks to get rid of ( some ) warnings about 'Use of uninitialized value' in various places
+    Moved set_active_iter_for_broken_combo_box to run on 'changed' signal of combo's child instead of 'focus_out_event'
+    Removed $widget->get_child->set_text("") from set_active_iter_for_broken_combo_box ... WTF was that for?
+    Fixed a bug in 'delete' method that was deleting the wrong record from the *in-memory* recordset ( DB data was OK )
+    Add insertion marker to primary key of *in-memory* recordset if there are no records ( otherwise users must first insert() before entering data )
+    Updated TODO
+
 Version 0.8, released 10-Mar-2005
     
     INCOMPATIBLE CHANGE: don't call on_current while we're constructing ourself - external code won't be able to 'see' us yet

@@ -1,17 +1,37 @@
-- Fetch default values from DB server
+Below is a list of things which probably need attention, along with comments on
+whether I think *I'm* going to do anything about them, and other comments / considerations.
+
+If you're looking for something to do, you just found it.
+None of these ( apart from search functionality ) should take particularly long - just
+someone who knows what they're doing ( which is why I've left them out )
+
+---
+
+- Search functionality: the most likely addition I'd add if / when spare time allows
+    Still thinking about which way to go here. Options:
+	- Full-blown dialog for advanced searching on multiple fields
+	- Simple single-field search
+    Considerations:
+	- should we use SQL or regex to find matches?
+
+---
+
+- Fetch default values from DB server: possibility in the mid-range, no burning need
     Is this possible? Is there anything in DBI that provides default values, or do we have to parse
 	the output of a 'show create table' statement ( MySQL only ) or something?
 
-- Possible workaround for Gnome2::DateEdit's insistance on always displaying a date?
-    Not sure what I'd do though
+---
 
-- Adding support for more DB servers
+- Possible workaround for Gnome2::DateEdit's insistance on always displaying a date ( ie no NULLs ): not interested in this any more
+    Better to wait for upstream fix to what I consider a broken widget
+    
+---
+
+- Adding support for more DB servers: don't have access to other DB servers / not interested
     - Postgres
-	last_insert_id doesn't currently work
+	My last_insert_id doesn't currently work - needs a glance from someone who knows how to make it work
 	Perhaps we can use 'select @@IDENTITY' if I can't make $dbh->last_insert_id work?
-
-    - Oracle: completely untested
-    
-- Demo app
-    Just don't have time at the moment...
-    
+    - Oracle
+	Completely untested
+	See Postgres
+	

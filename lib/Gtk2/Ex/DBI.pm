@@ -10,11 +10,12 @@
 # For Postgres support, all you need to do ( I think ) is fix my last_insert_id method ( untested ).
 # I assume Oracle support will be as simple as Postgres ( untested ).
 
-# See 'man Gtk2::Ex::DBI' for full documentation
+# See 'man Gtk2::Ex::DBI' for full documentation ... or of course continue reading
 
 package Gtk2::Ex::DBI;
 
 use strict;
+use warnings;
 
 use DBI;
 use POSIX;
@@ -22,13 +23,13 @@ use POSIX;
 use Glib qw/TRUE FALSE/;
 
 BEGIN {
-	$Gtk2::Ex::DBI::VERSION = '0.8';
+	$Gtk2::Ex::DBI::VERSION = '0.9';
 }
 
 use Gtk2::Ex::Dialogs (
-				destroy_with_parent	=> TRUE,
-				modal				=> TRUE,
-				no_separator			=> FALSE
+			destroy_with_parent	=> TRUE,
+			modal			=> TRUE,
+			no_separator		=> FALSE
 		      );
 
 sub new {
@@ -37,59 +38,67 @@ sub new {
 	
 	# Assemble object from request
 	my $self = {
-					dbh				=> $$req{dbh},              	# A database handle
-					table			=> $$req{table},            	# The source table ( needed for inserts / updates )
-					primarykey		=> $$req{primarykey},       	# The primary key ( needed for inserts / updates )
-					sql_select		=> $$req{sql_select},       	# The 'select' clause of the query
-					sql_where		=> $$req{sql_where},        	# The 'where' clause of the query
-					sql_order_by		=> $$req{sql_order_by},     	# The 'order by' clause of the query
-					form			=> $$req{form},             	# The Gtk2-GladeXML *object* we're using
-					formname		=> $$req{formname},         	# The *name* of the window ( needed for dialogs to work properly )
-					readonly			=> $$req{readonly} || 0,    	# Whether changes to the table are allowed
-					apeture			=> $$req{apeture} || 100,   	# The number of records to select at a time
-					on_current		=> $$req{on_current},       	# A reference to code that is run when we move to a new record
-					on_apply		=> $$req{on_apply},		# A reference to code that is run *after* the 'apply' method is called
-					calc_fields		=> $$req{calc_fields},      	# Calculated field definitions ( HOH )
-					defaults			=> $$req{defaults},	    	# Default values ( HOH )
-					quiet			=> $$req{quiet} || 0,		# A flag to silence warnings such as missing widgets
-					changed			=> 0,                       		# A flag indicating that the current record has been changed
-					changelock		=> 0,                       		# Prevents the 'changed' flag from being set when we're moving records
-					dontspin			=> 0,                        		# Prevents the recordspinner from triggering an endless move loop
-					constructor_done	=> 0					# A flag that indicates whether the new() method has completed yet
+			dbh			=> $$req{dbh},			# A database handle
+			table			=> $$req{table},		# The source table ( needed for inserts / updates )
+			primarykey		=> $$req{primarykey},		# The primary key ( needed for inserts / updates )
+			sql_select		=> $$req{sql_select},		# The 'select' clause of the query
+			sql_where		=> $$req{sql_where},		# The 'where' clause of the query
+			sql_order_by		=> $$req{sql_order_by},		# The 'order by' clause of the query
+			form			=> $$req{form},			# The Gtk2-GladeXML *object* we're using
+			formname		=> $$req{formname},		# The *name* of the window ( needed for dialogs to work properly )
+			readonly		=> $$req{readonly} || 0,	# Whether changes to the table are allowed
+			apeture			=> $$req{apeture} || 100,	# The number of records to select at a time
+			on_current		=> $$req{on_current},		# A reference to code that is run when we move to a new record
+			on_apply		=> $$req{on_apply},		# A reference to code that is run *after* the 'apply' method is called
+			calc_fields		=> $$req{calc_fields},		# Calculated field definitions ( HOH )
+			defaults		=> $$req{defaults},		# Default values ( HOH )
+			quiet			=> $$req{quiet} || 0,		# A flag to silence warnings such as missing widgets
+			changed			=> 0,				# A flag indicating that the current record has been changed
+			changelock		=> 0,				# Prevents the 'changed' flag from being set when we're moving records
+			dontspin		=> 0,				# Prevents the recordspinner from triggering an endless move loop
+			constructor_done	=> 0				# A flag that indicates whether the new() method has completed yet
 	};
 	
 	bless $self, $class;
 	
 	$self->query;
 	
-	# Connect our 'changed' method to whatever signal each widget emits when it's 'changed'
+	# We connect a few little goodies to various widgets ...
 	
-	# Gtk's ComboBoxEntry has a bug where it only registers a change and set's the currect iter if the combo box functionality is used.
+	# - Connect our 'changed' method to whatever signal each widget emits when it's 'changed'
+	
+	# - Gtk's ComboBoxEntry has a bug where it only registers a change and set's the currect iter if the combo box functionality is used.
 	# If the Entry functionality is used ( ie someone types a string that matches one in the list ), NOTHING is registered, and the active iter is not set.
 	# We *NEED* to work around this until the bug is fixed, otherwise ComboBoxEntrys are horribly broken.
 	# Therefore we connect the sub set_active_iter_for_broken_combo_box to the on_focus_out event.
 	
 	# See http://bugzilla.gnome.org/show_bug.cgi?id=156017
 	
+	# - Use the populate-popup signal of Gtk2::Entry widgets to add the 'find' menu item
+	
 	foreach my $field ( @{$self->fieldlist} ) {		
 		my $widget = $self->{form}->get_widget($field);
 		if (defined $widget) {
 			my $type = (ref $widget);
 			if ($type eq "Gtk2::Calendar") {
-				$widget->signal_connect(				day_selected		=> sub { $self->changed; } );
+				$widget->signal_connect(		day_selected	=> sub { $self->changed; } );
 			} elsif ($type eq "Gtk2::ToggleButton") {
-				$widget->signal_connect(				toggled			=> sub { $self->changed; } );
+				$widget->signal_connect(		toggled		=> sub { $self->changed; } );
 			} elsif ($type eq "Gnome2::DateEdit") {
-				$widget->signal_connect(				date_changed	=> sub { $self->changed; } );
+				$widget->signal_connect(		date_changed	=> sub { $self->changed; } );
 			} elsif ($type eq "Gtk2::TextView") {
-				$widget->get_buffer->signal_connect(	changed			=> sub { $self->changed; } );
+				$widget->get_buffer->signal_connect(	changed		=> sub { $self->changed; } );
 			} elsif ($type eq "Gtk2::ComboBoxEntry") {
-				$widget->signal_connect(				changed			=> sub { $self->changed; } );
-				$widget->get_child->signal_connect(	focus_out_event	=> sub { $self->set_active_iter_for_broken_combo_box($widget) } );
+				$widget->signal_connect(		changed		=> sub { $self->changed; } );
+				$widget->get_child->signal_connect(	changed		=> sub { $self->set_active_iter_for_broken_combo_box($widget) } );
 			} elsif ($type eq "Gtk2::CheckButton") {
-				$widget->signal_connect(				toggled			=> sub { $self->changed; } );
+				$widget->signal_connect(		toggled		=> sub { $self->changed; } );
+			} elsif ($type eq "Gtk2::Entry") {
+				$widget->signal_connect(		changed		=> sub { $self->changed; } );
+				# *** TODO *** enable this when we've added search functionality
+				#$widget->signal_connect(		'populate-popup'=> sub { $self->build_right_click_menu(@_); } );
 			} else {
-				$widget->signal_connect(				changed			=> sub { $self->changed; } );            
+				$widget->signal_connect(		changed		=> sub { $self->changed; } );
 			}
 		}       
 	}
@@ -137,8 +146,8 @@ sub query {
 	my $sth = $self->{dbh}->prepare(
 		"select " . $self->{primarykey}
 		. " from " . $self->{table} . " "
-		. $self->{sql_where} . " "
-		. $self->{sql_order_by}
+		. $self->{sql_where} || "" . " "
+		. $self->{sql_order_by} || ""
 				       );
 	
 	$sth->execute;
@@ -268,9 +277,10 @@ sub paint {
 				
 				while ($iter) {
 					
-					if ($self->{records}[$self->{slice_position}]->{$field} eq $widget->get_model->get($iter, 0)) {
-						$widget->set_active_iter($iter);
-						last;
+					if ( ( defined $self->{records}[$self->{slice_position}]->{$field} ) &&
+						( $self->{records}[$self->{slice_position}]->{$field} eq $widget->get_model->get($iter, 0)) ) {
+							$widget->set_active_iter($iter);
+							last;
 					}
 					
 					$iter = $widget->get_model->iter_next($iter);
@@ -339,7 +349,12 @@ sub paint {
 			} else {
 				
 				# Assume everything else has a 'set_text' method. Add more types if necessary...
-				$widget->set_text($self->{records}[$self->{slice_position}]->{$field});
+				# Little test to make perl STFU about 'Use of uninitialized value in subroutine entry'
+				if ( defined($self->{records}[$self->{slice_position}]->{$field}) ) {
+						$widget->set_text($self->{records}[$self->{slice_position}]->{$field});
+				} else {
+					$widget->set_text("");
+				}
 				
 			}
 		}
@@ -446,8 +461,16 @@ sub fetch_new_slice {
 	
 	if ($keyset_count == 0) {
 		
-		# This will happen if we have an empty recordset in our keyset ( ie if there are no records returned )
+		# This ( keyset_count == 0 ) will happen if we have an empty recordset in our keyset
+		# ( ie if there are no records returned ). Create an empty array. 
 		$self->{records} = ();
+		
+		# In this case, we should also set the insertion flag, in case people want to start typing
+		# straight into the form. After all, the fields will all be blank, so people will not feel
+		# the need to hit the 'insert' button.
+		# Note that we *don't* set the changed flag, as the user may *not* insert anything at this point
+		$self->{records}[$self->{slice_position}]->{$self->{primarykey}} = "!";
+		$self->set_defaults; # Paint will happen back in the move() operation
 		
 	} else {
 		
@@ -489,9 +512,9 @@ sub apply {
 	
 	if ($self->{readonly} == 1) {
 		new_and_run Gtk2::Ex::Dialogs::ErrorMsg(
-								title	=> "Read Only!",
-								text	=> "Sorry. This form is open\nin read-only mode!"
-		);
+							title	=> "Read Only!",
+							text	=> "Sorry. This form is open\nin read-only mode!"
+						       );
 		return 0;
 	}
 	
@@ -614,15 +637,11 @@ sub apply {
 	my $update_sql;
 	
 	if ($inserting) {
-		
 		chop($placeholders); # Chop off trailing comma
 		$update_sql = "insert into " .$self->{table} . " ( $fieldlist ) values ( $placeholders )";
-		
 	} else {
-		
 		push @bind_values, $self->{records}[$self->{slice_position}]->{$self->{primarykey}};
 		$update_sql = "update " . $self->{table} . " set $fieldlist where " . $self->{primarykey} . "=?";
-		
 	}
 	
 	my $sth = $self->{dbh}->prepare($update_sql);
@@ -684,19 +703,14 @@ sub apply {
 				my $date;
 				
 				if ($day > 0) {
-					
 					$month ++;
-					
 					if (length($month) == 1) {
 						$month = "0" . $month;
 					}
-					
 					if (length($day) == 1) {
 						$day = "0" . $day;
 					}
-					
 					$date = $year . "-" . $month . "-" . $day;
-					
 				} else {
 					$date = undef;
 				}
@@ -820,6 +834,10 @@ sub revert {
 		# This looks like a new record. Delete it and roll back one record
 		my $garbage_record = pop @{$self->{records}};
 		$self->{changed} = 0;
+		# Force a new slice to be fetched when we move(), which in turn handles with possible problems
+		# if there are no records ( ie we want to put the insertion marker '!' back into the primary
+		# key if there are no records )
+		$self->{keyset_group} = -1;
 		$self->move(-1);
 	} else {
 		# Existing record
@@ -849,10 +867,20 @@ sub delete {
 		return 0;
 	}
 	
-	my $garbage_record = pop @{$self->{records}};
-	
+	# Cancel any updates ( if the user changed something before pressing delete )
 	$self->{changed} = 0;
-	$self->move(0);
+	
+	# First remove the record from the keyset
+	splice(@{$self->{keyset}}, $self->position, 1);
+	
+	# Force a new slice to be fetched when we move(), which in turn handles with possible problems
+	# if there are no records ( ie we want to put the insertion marker '!' back into the primary
+	# key if there are no records )
+	$self->{keyset_group} = -1;
+	
+	# Moving forwards will give problems if we're at the end of the keyset, so we move backwards instead
+	# If we're already at the start, move() will deal with this gracefully
+	$self->move(-1);
 	$self->set_record_spinner_range;
 	
 }
@@ -862,7 +890,6 @@ sub position {
 	# Returns the absolute position ( starting at 0 ) in the recordset ( taking into account the keyset and slice positions )
 	
 	my $self = shift;
-	
 	return ( $self->{keyset_group} * $self->{apeture} ) + $self->{slice_position};
 	
 }
@@ -885,8 +912,7 @@ sub set_record_spinner_range {
 
 sub set_active_iter_for_broken_combo_box {
 	
-	# This function is called when a ComboBoxEntry loses it's focus
-	
+	# This function is called when a ComboBoxEntry's value is changed
 	# See http://bugzilla.gnome.org/show_bug.cgi?id=156017
 	
 	my ( $self, $widget ) = @_;
@@ -894,9 +920,7 @@ sub set_active_iter_for_broken_combo_box {
 	my $string = $widget->get_child->get_text;
 	my $model = $widget->get_model;
 	my $current_iter = $widget->get_active_iter;
-	my $iter = $model->get_iter_first;
-	
-	$widget->get_child->set_text("");                
+	my $iter = $model->get_iter_first;            
 	
 	while ($iter) {                    
 		if ($string eq $model->get($iter, 1)) {
@@ -932,26 +956,45 @@ sub last_insert_id {
 	my $self = shift;
 	
 	if ($self->{dbh}->{Driver}->{Name} eq "mysql" && $DBD::mysql::VERSION <=2.9004) {
-		
 		return $self->{dbh}->{'mysql_insertid'};
-		
 	} elsif ($self->{dbh}->{Driver}->{Name} eq "ODBC") {
-		
 		my $sth = $self->{dbh}->prepare('select @@IDENTITY');
-		
 		$sth->execute;
-		
 		if (my $row = $sth->fetchrow_array) {
 			return $row;
 		} else {
 			return undef;
 		}
-		
 	} else {
-		
 		return $self->{dbh}->last_insert_id;
-		
 	}
+	
+}
+
+# *** These last 2 subs are not really functional yet. I started on a 'simple' search, activated from
+# *** individual fields, and then thought it might be a better idea to do a nice advanced search
+# *** dialog. I've left this in place for now in case I want to hook up this 'simple' functionality
+# *** to a more advanced dialog ... if I implement a more advanced dialog of course.
+
+sub build_right_click_menu {
+	
+	# Appends a 'find' menu item to the right-click menu for Gtk2::Entry widgets
+	
+	my ( $self, $widget, $menu ) = @_;
+	
+	my $menu_item = Gtk2::ImageMenuItem->new_from_stock("gtk-find");
+	
+	$menu_item->signal_connect( activate => sub { $self->find_dialog(@_); } );
+	$menu->append($menu_item);
+	$menu_item->show;
+	
+}
+
+sub find_dialog {
+	
+	# Pops up a find dialog for the user to search the *existing* recordset
+	my ( $self, $other_stuff ) = @_;
+	print "\nGtk2::Ex::DBI - User has selected 'find' from a Gtk2::Entry ...\n ... ( functionality not yet added - see TODO )\n\n";
 	
 }
 
@@ -964,11 +1007,8 @@ Gtk2::Ex::DBI
 =head1 SYNOPSIS
 
 use DBI;
-
 use Gtk2 -init;
-
 use Gtk2::GladeXML;
-
 use Gtk2::Ex::DBI; 
 
 my $dbh = DBI->connect (
