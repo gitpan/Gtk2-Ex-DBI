@@ -1,5 +1,9 @@
 CHANGELOG
 
+Version 1.0, released 10-Jun-2005
+    
+    Removed broken last_insert_id code - everything now uses select @@IDENTITY
+    
 Version 0.9, released 11-May-2005
     
     Add checks to get rid of ( some ) warnings about 'Use of uninitialized value' in various places

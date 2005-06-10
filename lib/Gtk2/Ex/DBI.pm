@@ -3,13 +3,6 @@
 # (C) Daniel Kasak: dan@entropy.homelinux.org
 # See COPYRIGHT file for full license
 
-# This package was designed with MySQL in mind, and has received a good workout connecting to that server.
-# MS SQL Server and Sybase support has recently been added via DBD::ODBC. DBD::Sybase does NOT work ( no placeholders ).
-
-# It should work ( with minor changes ) with any other DB server with DBI drivers.
-# For Postgres support, all you need to do ( I think ) is fix my last_insert_id method ( untested ).
-# I assume Oracle support will be as simple as Postgres ( untested ).
-
 # See 'man Gtk2::Ex::DBI' for full documentation ... or of course continue reading
 
 package Gtk2::Ex::DBI;
@@ -22,15 +15,15 @@ use POSIX;
 
 use Glib qw/TRUE FALSE/;
 
-BEGIN {
-	$Gtk2::Ex::DBI::VERSION = '0.9';
-}
-
 use Gtk2::Ex::Dialogs (
 			destroy_with_parent	=> TRUE,
 			modal			=> TRUE,
 			no_separator		=> FALSE
 		      );
+
+BEGIN {
+	$Gtk2::Ex::DBI::VERSION = '1.0';
+}
 
 sub new {
 	
@@ -39,7 +32,7 @@ sub new {
 	# Assemble object from request
 	my $self = {
 			dbh			=> $$req{dbh},			# A database handle
-			table			=> $$req{table},		# The source table ( needed for inserts / updates )
+			table			=> $$req{table},		# The source table
 			primarykey		=> $$req{primarykey},		# The primary key ( needed for inserts / updates )
 			sql_select		=> $$req{sql_select},		# The 'select' clause of the query
 			sql_where		=> $$req{sql_where},		# The 'where' clause of the query
@@ -76,7 +69,7 @@ sub new {
 	
 	# - Use the populate-popup signal of Gtk2::Entry widgets to add the 'find' menu item
 	
-	foreach my $field ( @{$self->fieldlist} ) {		
+	foreach my $field ( @{$self->fieldlist} ) {
 		my $widget = $self->{form}->get_widget($field);
 		if (defined $widget) {
 			my $type = (ref $widget);
@@ -100,7 +93,7 @@ sub new {
 			} else {
 				$widget->signal_connect(		changed		=> sub { $self->changed; } );
 			}
-		}       
+		}
 	}
 	
 	$self->{constructor_done} = 1;
@@ -155,7 +148,7 @@ sub query {
 	$self->{keyset} = ();
 	
 	while (my @row = $sth->fetchrow_array) {
-	        push @{$self->{keyset}}, $row[0];
+		push @{$self->{keyset}}, $row[0];
 	}
 	
 	$self->{dontspin} = 1;
@@ -229,7 +222,7 @@ sub paint {
 			my $type = (ref $widget);
 			
 			if ($type eq "Gtk2::Calendar") {
-
+				
 				if ($self->{records}[$self->{slice_position}]->{$field}) {
 					
 					my $year = substr($self->{records}[$self->{slice_position}]->{$field}, 0, 4);
@@ -256,7 +249,7 @@ sub paint {
 				} else {
 					
 					$widget->select_day(0);
-
+					
 				}
 				
 			} elsif ($type eq "Gtk2::ToggleButton") {
@@ -276,15 +269,12 @@ sub paint {
 				$widget->get_child->set_text("");                
 				
 				while ($iter) {
-					
 					if ( ( defined $self->{records}[$self->{slice_position}]->{$field} ) &&
 						( $self->{records}[$self->{slice_position}]->{$field} eq $widget->get_model->get($iter, 0)) ) {
 							$widget->set_active_iter($iter);
 							last;
 					}
-					
 					$iter = $widget->get_model->iter_next($iter);
-					
 				}
 				
 			} elsif ($type eq "Gtk2::TextView") {
@@ -552,7 +542,7 @@ sub apply {
 					
 					# NOTE! NOTE! Apparently GtkCalendar has the months starting at ZERO!
 					# Therefore, add one to the month...
-					$month ++;		    
+					$month ++;
 					
 					# Pad the $month and $day values
 					if (length($month) == 1) {
@@ -571,7 +561,7 @@ sub apply {
 				
 				push @bind_values, $date;
 				
-			} elsif ($type eq "Gtk2::ToggleButton") {				
+			} elsif ($type eq "Gtk2::ToggleButton") {
 				
 				if ($widget->get_active) {
 					push @bind_values, 1;
@@ -617,7 +607,7 @@ sub apply {
 				} else {
 					push @bind_values, 0;
 				}
-								
+				
 			} else {
 				
 				my $txt_value = $self->{form}->get_widget($field)->get_text;
@@ -661,7 +651,7 @@ sub apply {
 			warn "Error updating recordset:\n$update_sql\n@bind_values\n" . $@ . "\n\n";
 			return 0;
 	}
-	                           
+	
 	my $recordstatus = $self->{form}->get_widget("lbl_RecordStatus");
 	
 	if (defined $recordstatus) {
@@ -684,7 +674,7 @@ sub apply {
 		}
 		
 		$self->set_record_spinner_range;
-				
+		
 	}
 	
 	# SQL update successfull. Now apply update to local array. Comments ommitted, but logic is the same as above.
@@ -760,7 +750,7 @@ sub apply {
 				} else {
 					$self->{records}[$self->{slice_position}]->{$field} = 0;
 				}
-								
+				
 			} else {
 				
 				$self->{records}[$self->{slice_position}]->{$field}=$self->{form}->get_widget($field)->get_text;
@@ -803,7 +793,7 @@ sub paint_calculated {
 	
 	my ( $self, $field_to_paint ) = @_;
 	
-	foreach my $field ( $field_to_paint || keys %{$self->{calc_fields}} ) {		
+	foreach my $field ( $field_to_paint || keys %{$self->{calc_fields}} ) {
 		my $widget = $self->{form}->get_widget($field);
 		my $calc_value = eval $self->{calc_fields}->{$field};
 		
@@ -920,9 +910,9 @@ sub set_active_iter_for_broken_combo_box {
 	my $string = $widget->get_child->get_text;
 	my $model = $widget->get_model;
 	my $current_iter = $widget->get_active_iter;
-	my $iter = $model->get_iter_first;            
+	my $iter = $model->get_iter_first;
 	
-	while ($iter) {                    
+	while ($iter) {
 		if ($string eq $model->get($iter, 1)) {
 			$widget->set_active_iter($iter);
 			if ($iter != $current_iter) {
@@ -955,9 +945,9 @@ sub last_insert_id {
 	
 	my $self = shift;
 	
-	if ($self->{dbh}->{Driver}->{Name} eq "mysql" && $DBD::mysql::VERSION <=2.9004) {
-		return $self->{dbh}->{'mysql_insertid'};
-	} elsif ($self->{dbh}->{Driver}->{Name} eq "ODBC") {
+	#if ($self->{dbh}->{Driver}->{Name} eq "mysql" && $DBD::mysql::VERSION <=2.9004) {
+	#	return $self->{dbh}->{'mysql_insertid'};
+	#} elsif ($self->{dbh}->{Driver}->{Name} eq "ODBC") {
 		my $sth = $self->{dbh}->prepare('select @@IDENTITY');
 		$sth->execute;
 		if (my $row = $sth->fetchrow_array) {
@@ -965,9 +955,9 @@ sub last_insert_id {
 		} else {
 			return undef;
 		}
-	} else {
-		return $self->{dbh}->last_insert_id;
-	}
+	#} else {
+	#	return $self->{dbh}->last_insert_id;
+	#}
 	
 }
 
@@ -1070,9 +1060,9 @@ such as inserting, moving, deleting, etc.
 
 =head1 METHODS
 
-Object constructor. Expects a hash of key / value pairs. Bare minimum are:
-
 =head2 new	
+	
+	Object constructor. Expects a hash of key / value pairs. Bare minimum are:
 	
 	dbh             - a DBI database handle
 	
@@ -1219,4 +1209,23 @@ Object constructor. Expects a hash of key / value pairs. Bare minimum are:
 	
 	Perhaps I should remove support for this widget?
 	
+=head1 Other cool things you should know about
+
+This module is part of a 3-some:
+
+Gtk2::Ex::DBI                 - forms
+
+Gtk2::Ex::Datasheet::DBI      - datasheets
+
+PDF::ReportWriter             - reports
+
+Together ( and with a little help from other modules such as Gtk2::GladeXML ),
+these modules give you everything you need for rapid application development of database front-ends
+on Linux, Windows, or ( with a little frigging around ) Mac OS-X.
+
+All the above modules are available via cpan, or from:
+http://entropy.homelinux.org
+
+=head1 Crank ON!
+
 =cut
