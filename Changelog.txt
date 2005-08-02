@@ -1,8 +1,22 @@
 CHANGELOG
 
+Version 1.1, released 02-Aug-2005
+    
+    Ask user if they want to apply changes to current record before requerying ( ie don't simply apply without asking )
+    Add $sth->finish commands throughout to make things more SQLServer friendly when using DBD::ODBC with FreeTDS
+    INCOMPATIBLE CHANGE: Automatically move to a new position when the record spinner is clicked
+    Add missing $self->paint_calculated call at the end of $self->paint
+    Added debug key to dump some info to the terminal
+    Added calculator dialog to right-click menu of Gtk2::Entry widgets
+    Withdrew claim that we work with SQL Server ( see man page )
+    Removed unnecessary documentation of internal functions
+    Removed support for Gnome2::DateEdit, which is not suitable for database use due to it's handling of NULL values
+	See http://bugzilla.gnome.org/show_bug.cgi?id=169787
+    
 Version 1.0, released 10-Jun-2005
     
     Removed broken last_insert_id code - everything now uses select @@IDENTITY
+    Cache the fieldlist array in $self->{fieldlist} so we don't have to query the DB every time we need a field list
     
 Version 0.9, released 11-May-2005
     

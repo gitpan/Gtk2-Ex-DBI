@@ -22,7 +22,7 @@ use Gtk2::Ex::Dialogs (
 		      );
 
 BEGIN {
-	$Gtk2::Ex::DBI::VERSION = '1.0';
+	$Gtk2::Ex::DBI::VERSION = '1.1';
 }
 
 sub new {
@@ -48,11 +48,17 @@ sub new {
 			quiet			=> $$req{quiet} || 0,		# A flag to silence warnings such as missing widgets
 			changed			=> 0,				# A flag indicating that the current record has been changed
 			changelock		=> 0,				# Prevents the 'changed' flag from being set when we're moving records
-			dontspin		=> 0,				# Prevents the recordspinner from triggering an endless move loop
-			constructor_done	=> 0				# A flag that indicates whether the new() method has completed yet
+			constructor_done	=> 0,				# A flag that indicates whether the new() method has completed yet
+			debug			=> $$req{debug} || 0		# Turn on to dump info to terminal
 	};
 	
 	bless $self, $class;
+	
+	# Cache the fieldlist array so we don't have to continually query the DB server for it
+	my $sth = $self->{dbh}->prepare($self->{sql_select} . " from " . $self->{table} . " where 0=1");
+	$sth->execute;
+	$self->{fieldlist} = $sth->{'NAME'};
+	$sth->finish;
 	
 	$self->query;
 	
@@ -60,16 +66,20 @@ sub new {
 	
 	# - Connect our 'changed' method to whatever signal each widget emits when it's 'changed'
 	
-	# - Gtk's ComboBoxEntry has a bug where it only registers a change and set's the currect iter if the combo box functionality is used.
-	# If the Entry functionality is used ( ie someone types a string that matches one in the list ), NOTHING is registered, and the active iter is not set.
+	# - Gtk's ComboBoxEntry has a bug where it only registers a change and set's the currect iter if
+	# the combo box functionality is used. If the Entry functionality is used ( ie someone types a
+	# string that matches one in the list ), NOTHING is registered, and the active iter is not set.
 	# We *NEED* to work around this until the bug is fixed, otherwise ComboBoxEntrys are horribly broken.
 	# Therefore we connect the sub set_active_iter_for_broken_combo_box to the on_focus_out event.
 	
 	# See http://bugzilla.gnome.org/show_bug.cgi?id=156017
+	# Note that while the above bug page shows this bug as being 'FIXED', I've yet to see this
+	# fix materialise in Gtk2 - when it does I will limit our work-around to those affected
+	# versions of Gtk2.
 	
 	# - Use the populate-popup signal of Gtk2::Entry widgets to add the 'find' menu item
 	
-	foreach my $field ( @{$self->fieldlist} ) {
+	foreach my $field ( @{$self->{fieldlist}} ) {
 		my $widget = $self->{form}->get_widget($field);
 		if (defined $widget) {
 			my $type = (ref $widget);
@@ -77,8 +87,6 @@ sub new {
 				$widget->signal_connect(		day_selected	=> sub { $self->changed; } );
 			} elsif ($type eq "Gtk2::ToggleButton") {
 				$widget->signal_connect(		toggled		=> sub { $self->changed; } );
-			} elsif ($type eq "Gnome2::DateEdit") {
-				$widget->signal_connect(		date_changed	=> sub { $self->changed; } );
 			} elsif ($type eq "Gtk2::TextView") {
 				$widget->get_buffer->signal_connect(	changed		=> sub { $self->changed; } );
 			} elsif ($type eq "Gtk2::ComboBoxEntry") {
@@ -89,14 +97,30 @@ sub new {
 			} elsif ($type eq "Gtk2::Entry") {
 				$widget->signal_connect(		changed		=> sub { $self->changed; } );
 				# *** TODO *** enable this when we've added search functionality
-				#$widget->signal_connect(		'populate-popup'=> sub { $self->build_right_click_menu(@_); } );
+				$widget->signal_connect(		'populate-popup'=> sub { $self->build_right_click_menu(@_); } );
 			} else {
 				$widget->signal_connect(		changed		=> sub { $self->changed; } );
 			}
 		}
 	}
 	
+	$self->{spinner} = $self->{form}->get_widget("RecordSpinner");
+	
+	if ( $self->{spinner} ) {
+		
+		$self->{record_spinner_value_changed_signal}
+			= $self->{spinner}->signal_connect( value_changed	=> sub {
+				$self->{spinner}->signal_handler_block($self->{record_spinner_value_changed_signal});
+				$self->move( undef, $self->{spinner}->get_text - 1 );
+				$self->{spinner}->signal_handler_unblock($self->{record_spinner_value_changed_signal});
+				return 1;
+			}
+						 );
+	}
+	
 	$self->{constructor_done} = 1;
+	
+	$self->set_record_spinner_range;
 	
 	return $self;
 	
@@ -104,15 +128,11 @@ sub new {
 
 sub fieldlist {
 	
-	# This function returns a fieldlist by querying the DB server ( with the impossible condition 'where 0=1' for speed )
-	# This is the only reliable way of building a fieldlist, eg when the query returned no records, or where we are inserting
-	# a record, and the only field in the in-memory recordset is the primary key ( also with the possibility of an empty recordset )
+	# Provide legacy fieldlist method
 	
 	my $self = shift;
 	
-	my $sth = $self->{dbh}->prepare($self->{sql_select} . " from " . $self->{table} . " where 0=1");
-	$sth->execute;
-	return $sth->{'NAME'};
+	return $self->{fieldlist};
 	
 }
 
@@ -122,10 +142,19 @@ sub query {
 	
 	# Update database from current hash if necessary
 	if ($self->{changed} == 1) {
-		my $result = $self->apply;
-		if ($result == 0) {
-			return 0;
+		
+		my $answer = ask Gtk2::Ex::Dialogs::Question(
+				    title	=> "Apply changes to " . $self->{table} . " before querying?",
+				    text	=> "There are outstanding changes to the current record ( " . $self->{table} . " )."
+							. " Do you want to apply them before running a new query?"
+							    );
+
+		if ($answer) {
+		    if ( ! $self->apply ) {
+			return FALSE; # Apply method will already give a dialog explaining error
+		    }
 		}
+		
 	}
 	
 	if (defined $sql_where) {
@@ -151,11 +180,17 @@ sub query {
 		push @{$self->{keyset}}, $row[0];
 	}
 	
-	$self->{dontspin} = 1;
-	$self->set_record_spinner_range;
-	$self->{dontspin} = 0;
+	$sth->finish;
+	
+	if ( $self->{spinner} ) {
+		$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal} );
+		$self->set_record_spinner_range;
+		$self->{spinner}->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
+	}
 	
 	$self->move(0, 0);
+	
+	$self->set_record_spinner_range;
 	
 	return 1;
 	
@@ -171,6 +206,13 @@ sub insert {
 	my $self = shift;
 	my $newposition = $self->count; # No need to add one, as the array starts at zero.
 	
+	# Open RecordSpinner range
+	if ( $self->{spinner} ) {
+		$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal} );
+		$self->{spinner}->set_range( 1, $self->count + 1 );
+		$self->{spinner}->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
+	}
+	
 	if (! $self->move(0, $newposition)) {
 		warn "Insert failed ... probably because the current record couldn't be applied\n";
 		return 0;
@@ -179,7 +221,6 @@ sub insert {
 	$self->{records}[$self->{slice_position}]->{$self->{primarykey}} = "!";
 	$self->set_defaults;
 	$self->paint; # 2nd time this is called in this sub ( 1st from $self->move ) but we need to do it again to paint the default values
-	$self->set_record_spinner_range;
 	
 	return 1;
 	
@@ -207,7 +248,7 @@ sub paint {
 	# Set the changelock so we don't trigger more changes
 	$self->{changelock} = 1;
 	
-	foreach my $field ( @{$self->fieldlist} ) {
+	foreach my $field ( @{$self->{fieldlist}} ) {
 		
 		my $widget = $self->{form}->get_widget($field);
 		
@@ -281,57 +322,6 @@ sub paint {
 				
 				$widget->get_buffer->set_text($self->{records}[$self->{slice_position}]->{$field});
 				
-			} elsif ($type eq "Gnome2::DateEdit") {   
-				
-				# NOTE! We're expecting dates to be in the format: yyyy-mm-dd. This is MySQL's default.
-				my ( $year, $month, $day ) = split(/-/, $self->{records}[$self->{slice_position}]->{$field});
-				
-				if ($day) {
-					
-					# mktime()'s arguments are *weird*...
-					$month --;
-					$year = $year-1900;
-					
-					$widget->set_time( mktime(0, 0, 0, $day, $month, $year) );
-					
-				} else {
-					
-					$widget->set_time( mktime(0, 0, 0, 0, 0, 0) ); # TODO: This doesn't work. What should we do?
-					
-					# If we're not inserting ( ie painting a blank form ), it's time to warn and then bail out
-					if ($self->{records}[$self->{slice_position}]->{$self->{primarykey}} ne "!") {
-						
-						# Dump error to the console
-						# ( you never know if people have Gtk2::Ex::Dialogs installed )
-						my $error_msg = "Field $field just received a NULL value,\n"
-						 . "but you've attached it to a\n Gnome2::DateEdit\n"
-						 . "... which can't display / return NULL values!\n"
-						 . "\n\tReplace that Gnome2::DateEdit with something else.\n"
-						 . "\tI suggest a Gtk2::Calendar.\n"
-						 . "\n\tTo prevent data corruption, I'm bailing out!\n";
-						
-						print $error_msg;
-						
-						# Try to tell people what's going on via the GUI
-						new_and_run Gtk2::Ex::Dialogs::ErrorMsg(
-							title	=> "Invalid use of Gnome2::DateEdit!",
-							text	=> $error_msg
-						);
-						
-						# Destroy self
-						$self = undef;
-						
-						# And bail
-						exit;
-						
-					}
-					
-				}
-				
-				# Warn the unsuspecting about issues with this widget
-				print "*** WARNING *** Gnome2::DateEdit is NOT for you if you need the option of\n";
-				print "\tstoring NULL values. See BUGS in man page for more details\n";
-				
 			} elsif ($type eq "Gtk2::CheckButton") {
 				
 				$widget->set_active($self->{records}[$self->{slice_position}]->{$field});
@@ -350,15 +340,12 @@ sub paint {
 		}
 	}
 	
+	# Paint calculated fields
+	$self->paint_calculated;
+	
 	# Execute external on_current code ( only if we have been constructed AND returned to calling code 1st - otherwise references to us won't work )
 	if ( $self->{on_current} && $self->{constructor_done} ) {
 		$self->{on_current}();
-	}
-	
-	if ( $self->{form}->get_widget("RecordSpinner") ) {
-		$self->{dontspin} = 1;
-		$self->{form}->get_widget("RecordSpinner")->set_text( ( $self->{keyset_group} * $self->{apeture} ) + $self->{slice_position} + 1);
-		$self->{dontspin} = 0;
 	}
 	
 	# Unlock the changelock
@@ -380,10 +367,10 @@ sub move {
 		my $result = $self->apply;
 		if ($result == 0) {
 			# Update failed. If RecordSpinner exists, set it to the current position PLUS ONE.
-			if ( defined $self->{form}->get_widget("RecordSpinner") ) {
-				$self->{dontspin} = 1;
-				$self->{form}->get_widget("RecordSpinner")->set_text($self->position + 1);
-				$self->{dontspin} = 0;
+			if ( $self->{spinner} ) {
+				$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal});
+				$self->{spinner}->set_text( $self->position + 1 );
+				$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal});
 			}
 			return 0;
 		}
@@ -432,6 +419,14 @@ sub move {
 	$self->{slice_position} = $new_position - ( $new_keyset_group * $self->{apeture} );
 	
 	$self->paint;
+	
+	# Set the RecordSpinner
+	if ( $self->{spinner} ) {
+		$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal} );
+		$self->{spinner}->set_text( $self->position + 1 );
+		$self->{spinner}->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
+	}
+	
 	return 1;
 	
 }
@@ -459,6 +454,7 @@ sub fetch_new_slice {
 		# straight into the form. After all, the fields will all be blank, so people will not feel
 		# the need to hit the 'insert' button.
 		# Note that we *don't* set the changed flag, as the user may *not* insert anything at this point
+		
 		$self->{records}[$self->{slice_position}]->{$self->{primarykey}} = "!";
 		$self->set_defaults; # Paint will happen back in the move() operation
 		
@@ -518,7 +514,13 @@ sub apply {
 		$inserting = 1;
 	}
 	
-	foreach my $field ( @{$self->fieldlist} ) {
+	foreach my $field ( @{$self->{fieldlist}} ) {
+		
+		if ( $self->{debug} ) {
+			print "Processing field $field ...\n";
+		}
+		
+		my $current_value = undef;
 		
 		my $widget = $self->{form}->get_widget($field);
 		
@@ -532,6 +534,10 @@ sub apply {
 			}
 			
 			my $type = (ref $widget);
+			
+			if ( $self->{debug} ) {
+				print "   ... widget type: $type\n";
+			}
 			
 			if ($type eq "Gtk2::Calendar") {
 				
@@ -559,14 +565,15 @@ sub apply {
 					$date = undef;
 				}
 				
-				push @bind_values, $date;
+				$current_value = $date;
+				
 				
 			} elsif ($type eq "Gtk2::ToggleButton") {
 				
 				if ($widget->get_active) {
-					push @bind_values, 1;
+					$current_value = 1;
 				} else {
-					push @bind_values, 0;
+					$current_value = 0;
 				}
 				
 			} elsif ($type eq "Gtk2::ComboBoxEntry") {   
@@ -578,13 +585,13 @@ sub apply {
 				# If we find a "Glib::Int" column type, we push a zero onto @bind_values otherwise 'undef'
 				
 				if (defined $iter) {
-					push @bind_values, $widget->get_model->get($iter, 0);
+					$current_value = $widget->get_model->get($iter, 0);
 				} else {                    
 					my $columntype = $widget->get_model->get_column_type(0);                    
 					if ($columntype eq "Glib::Int") {
-						push @bind_values, 0;
+						$current_value = 0;
 					} else {
-						push @bind_values, undef;
+						$current_value = undef;
 					}
 				}
 				
@@ -592,20 +599,14 @@ sub apply {
 				
 				my $textbuffer = $widget->get_buffer;
 				my ( $start_iter, $end_iter ) = $textbuffer->get_bounds;
-				push @bind_values, $textbuffer->get_text($start_iter, $end_iter, 1);
-				
-			} elsif ($type eq "Gnome2::DateEdit") {
-				
-				my $timestamp = $self->{form}->get_widget($field)->get_time;
-				my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst) = localtime($timestamp);                
-				push @bind_values, strftime("%Y-%m-%d", $sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst);
+				$current_value = $textbuffer->get_text($start_iter, $end_iter, 1);
 				
 			} elsif ($type eq "Gtk2::CheckButton") {
 				
 				if ($widget->get_active) {
-					push @bind_values, 1;
+					$current_value = 1;
 				} else {
-					push @bind_values, 0;
+					$current_value = 0;
 				}
 				
 			} else {
@@ -613,12 +614,19 @@ sub apply {
 				my $txt_value = $self->{form}->get_widget($field)->get_text;
 				
 				if ($txt_value || $txt_value eq "0") { # Don't push an undef value just because our field has a zero in it
-					push @bind_values, $txt_value;
+					$current_value = $txt_value;
 				} else {
-					push @bind_values, undef;
+					$current_value = undef;
 				}
 				
 			}
+			
+			push @bind_values, $current_value;
+			
+			if ( $self->{debug} ) {
+				print "   ... value: $current_value\n\n";
+			}
+			
 		}
 	}
 	
@@ -634,12 +642,21 @@ sub apply {
 		$update_sql = "update " . $self->{table} . " set $fieldlist where " . $self->{primarykey} . "=?";
 	}
 	
+	if ( $self->{debug} ) {
+		print "Final SQL:\n$update_sql\n\n";
+		for my $value ( @bind_values ) {
+			print " bound_value: $value\n";
+		}
+	}
+	
 	my $sth = $self->{dbh}->prepare($update_sql);
 	
 	# Evaluate the results of the update.
 	eval {
 		$sth->execute (@bind_values) || die $self->{dbh}->errstr;
 	};
+	
+	$sth->finish;
 	
 	# If the above failed, there will be something in the special variable $@
 	if ($@) {
@@ -673,13 +690,15 @@ sub apply {
 			$widget->set_text($inserted_id); # Assuming the widget has a set_text method of course ... can't see when this wouldn't be the case
 		}
 		
+		$widget->signal_handler_block(		$self->{record_spinner_value_changed_signal} );
 		$self->set_record_spinner_range;
+		$widget->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
 		
 	}
 	
 	# SQL update successfull. Now apply update to local array. Comments ommitted, but logic is the same as above.
 	
-	foreach my $field ( @{$self->fieldlist} ) {
+	foreach my $field ( @{$self->{fieldlist}} ) {
 		
 		my $widget = $self->{form}->get_widget($field);
 		
@@ -735,13 +754,6 @@ sub apply {
 				my $textbuffer = $widget->get_buffer;
 				my ( $start_iter, $end_iter ) = $textbuffer->get_bounds;
 				$self->{records}[$self->{slice_position}]->{$field} = $textbuffer->get_text($start_iter, $end_iter, 1);
-				
-			} elsif ($type eq "Gnome2::DateEdit") {
-				
-				my $timestamp = $self->{form}->get_widget($field)->get_time;
-				my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst) = localtime($timestamp);
-				$self->{records}[$self->{slice_position}]->{$field}=
-					strftime("%Y-%m-%d", $sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst);
 				
 			} elsif ($type eq "Gtk2::CheckButton") {
 				
@@ -804,7 +816,7 @@ sub paint_calculated {
 		} else {
 			if (ref $widget eq "Gtk2::Entry" || ref $widget eq "Gtk2::Label") {
 				$self->{changelock} = 1;
-				$widget->set_text($calc_value);
+				$widget->set_text($calc_value || "");
 				$self->{changelock} = 0;
 			} else {
 				warn "FIXME: Unknown widget type in Gtk2::Ex::DBI::paint_calculated: " . ref $widget . "\n";
@@ -835,6 +847,8 @@ sub revert {
 		$self->move(0);
 	}
 	
+	$self->set_record_spinner_range;
+	
 }
 
 sub delete {
@@ -848,6 +862,8 @@ sub delete {
 	eval {
 		$sth->execute($self->{records}[$self->{slice_position}]->{$self->{primarykey}}) || die $self->{dbh}->errstr;
 	};
+	
+	$sth->finish;
 	
 	if ($@) {
 		new_and_run Gtk2::Ex::Dialogs::ErrorMsg(
@@ -871,6 +887,7 @@ sub delete {
 	# Moving forwards will give problems if we're at the end of the keyset, so we move backwards instead
 	# If we're already at the start, move() will deal with this gracefully
 	$self->move(-1);
+	
 	$self->set_record_spinner_range;
 	
 }
@@ -890,10 +907,10 @@ sub set_record_spinner_range {
 	
 	my $self = shift;
 	
-	my $widget = $self->{form}->get_widget("RecordSpinner");
-	
-	if (defined $widget) {
-		$widget->set_range(1, $self->count);
+	if ( $self->{spinner} ) {
+		$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal} );
+		$self->{spinner}->set_range(1, $self->count);
+		$self->{spinner}->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
 	}
 	
 	return 1;
@@ -945,19 +962,16 @@ sub last_insert_id {
 	
 	my $self = shift;
 	
-	#if ($self->{dbh}->{Driver}->{Name} eq "mysql" && $DBD::mysql::VERSION <=2.9004) {
-	#	return $self->{dbh}->{'mysql_insertid'};
-	#} elsif ($self->{dbh}->{Driver}->{Name} eq "ODBC") {
-		my $sth = $self->{dbh}->prepare('select @@IDENTITY');
-		$sth->execute;
-		if (my $row = $sth->fetchrow_array) {
-			return $row;
-		} else {
-			return undef;
-		}
-	#} else {
-	#	return $self->{dbh}->last_insert_id;
-	#}
+	my $sth = $self->{dbh}->prepare('select @@IDENTITY');
+	$sth->execute;
+	
+	if (my $row = $sth->fetchrow_array) {
+		$sth->finish;
+		return $row;
+	} else {
+		$sth->finish;
+		return undef;
+	}
 	
 }
 
@@ -968,13 +982,24 @@ sub last_insert_id {
 
 sub build_right_click_menu {
 	
-	# Appends a 'find' menu item to the right-click menu for Gtk2::Entry widgets
+	# This sub appends menu items to the right-click menu of widgets ( currently only Gtk2::Entry widgets )
+	
+	# *** TODO *** Add some custom icons, particularly for the calculator ... find is OK
 	
 	my ( $self, $widget, $menu ) = @_;
 	
+	# The 'find' menu item
 	my $menu_item = Gtk2::ImageMenuItem->new_from_stock("gtk-find");
+	$menu_item->signal_connect( activate => sub { $self->find_dialog($widget); } );
+	$menu->append($menu_item);
+	$menu_item->show;
 	
-	$menu_item->signal_connect( activate => sub { $self->find_dialog(@_); } );
+	# The 'calculator' menu item
+	$menu_item = Gtk2::ImageMenuItem->new("Calculator");
+	my $pixbuf = $widget->render_icon( "gtk-index", "menu" );
+	my $image = Gtk2::Image->new_from_pixbuf($pixbuf);
+	$menu_item->set_image($image);
+	$menu_item->signal_connect( activate => sub { $self->calculator($widget); } );
 	$menu->append($menu_item);
 	$menu_item->show;
 	
@@ -983,8 +1008,119 @@ sub build_right_click_menu {
 sub find_dialog {
 	
 	# Pops up a find dialog for the user to search the *existing* recordset
-	my ( $self, $other_stuff ) = @_;
+	my ( $self, $widget ) = @_;
 	print "\nGtk2::Ex::DBI - User has selected 'find' from a Gtk2::Entry ...\n ... ( functionality not yet added - see TODO )\n\n";
+	
+}
+
+sub calculator {
+	
+	# This pops up a simple addition-only calculator, and returns the calculated value to the calling widget
+	
+	my ( $self, $widget ) = @_;
+	
+	my $dialog = Gtk2::Dialog->new (
+						"Gtk2::Ex::DBI calculator",
+						undef,
+						"modal",
+						"gtk-ok"	=> "ok",
+						"gtk-cancel"	=> "reject"
+				       );
+	
+	$dialog->set_default_size( 300, 480 );
+	
+	# The model
+	my $model = Gtk2::ListStore->new( "Glib::Double" );
+	
+	# Add an initial row data to the model
+	my $iter = $model->append;
+	$model->set( $iter, 0, 0 );
+	
+	# A renderer
+	my $renderer = Gtk2::CellRendererText->new;
+	$renderer->set( editable => TRUE );
+	
+	# A column
+	my $column = Gtk2::TreeViewColumn->new_with_attributes(
+								"Values",
+								$renderer,
+								'text'	=> 0
+							      );
+	
+	# The TreeView
+	my $treeview = Gtk2::TreeView->new( $model );
+	$treeview->set_rules_hint( TRUE );
+	$treeview->append_column($column);
+	
+	# A scrolled window to put the TreeView in
+	my $sw = Gtk2::ScrolledWindow->new( undef, undef );
+	$sw->set_shadow_type( "etched-in" );
+	$sw->set_policy( "never", "always" );
+	
+	# Add treeview to scrolled window
+	$sw->add( $treeview );
+	
+	# Add scrolled window to the dialog
+	$dialog->vbox->pack_start( $sw, TRUE, TRUE, 0 );
+	
+	# Add a Gtk2::Entry to show the current total
+	my $total_widget = Gtk2::Entry->new;
+	$dialog->vbox->pack_start( $total_widget, FALSE, FALSE, 0 );
+	
+	# Handle editing in the renderer
+	$renderer->signal_connect( edited => sub {
+		$self->calculator_process_editing( @_, $treeview, $model, $column, $total_widget );
+	} );
+	
+	# Show everything
+	$dialog->show_all;
+	
+	# Start editing in the 1st row
+	$treeview->set_cursor( $model->get_path( $iter ), $column, TRUE );
+	
+	my $response = $dialog->run;
+	
+	if ( $response eq "ok" ) {
+		# Transfer value back to calling widget and exit
+		$widget->set_text( $total_widget->get_text );
+		$dialog->destroy;
+	} else {
+		$dialog->destroy;
+	}
+	
+}
+
+sub calculator_process_editing {
+	
+	my ( $self, $renderer, $text_path, $new_text, $treeview, $model, $column, $total_widget ) = @_;
+	
+	my $path = Gtk2::TreePath->new_from_string ($text_path);
+	my $iter = $model->get_iter ($path);
+	
+	# Only do something if we get a numeric value that isn't zero
+	if ( $new_text !~ /\d/ || $new_text == 0 ) {
+		return FALSE;
+	}
+	
+	$model->set( $iter, 0, $new_text);
+	my $new_iter = $model->append;
+	
+	$treeview->set_cursor(
+		$model->get_path( $new_iter ),
+		$column,
+		TRUE
+			     );
+	
+	# Calculate total and display
+	$iter = $model->get_iter_first;
+	my $current_total;
+	
+	while ( $iter ) {
+		$current_total += $model->get( $iter, 0 );
+		$iter = $model->iter_next( $iter );
+	}
+	
+	$total_widget->set_text( $current_total );
 	
 }
 
@@ -1014,30 +1150,29 @@ my $dbh = DBI->connect (
 my $prospects_form = Gtk2::GladeXML->new("/path/to/glade/file/my_form.glade", 'Prospects');
 
 my $data_handler = Gtk2::Ex::DBI->new( {
-            dbh		=> $dbh,
-            table		=> "Prospects",
-            primarykey	=> "LeadNo",
-            sql_select	=> "select *",
-            sql_where	=> "where Actve=1",
-            form		=> $prospects,
-            formname	=> "Prospects",
-            on_current	=> \&Prospects_current,
-            calc_fields	=>
+            dbh         => $dbh,
+            table       => "Prospects",
+            primarykey  => "LeadNo",
+            sql_select  => "select *",
+            sql_where   => "where Actve=1",
+            form        => $prospects,
+            formname    => "Prospects",
+            on_current  => \&Prospects_current,
+            calc_fields =>
             {
-                        calc_total	=>
-                        'eval { $self->{form}->get_widget("value_1")->get_text
-                        + $self->{form}->get_widget("value_2")->get_text }'
+                        calc_total => 'eval { $self->{form}->get_widget("value_1")->get_text
+                            + $self->{form}->get_widget("value_2")->get_text }'
             },
             default_values     =>
             {
-                        ContractYears	=> 5,
-                        Fee			=> 2000
+                        ContractYears  => 5,
+                        Fee            => 2000
             }
 }
 );
 
 sub Prospects_current {
-	# I get called when moving from one record to another ( see on_current key, above )
+            # I get called when moving from one record to another ( see on_current key, above )
 }
 
 =head1 DESCRIPTION
@@ -1060,158 +1195,99 @@ such as inserting, moving, deleting, etc.
 
 =head1 METHODS
 
-=head2 new	
-	
-	Object constructor. Expects a hash of key / value pairs. Bare minimum are:
-	
-	dbh             - a DBI database handle
-	
-	table           - the name of the table you are querying
-	
-	primary_key     - the primary key of the table you are querying ( required for updating / deleting )
-	
-	sql_select      - the 'select' clause of the query
-	
-	form            - the Gtk2::GladeXML object that created your form
-	
-	formname        - the name of the form ( from the Glade file )
-	
-	
-	The 'new' method will call the 'query' method, which will in turn move to the 1st record and paint your form.
-	
-	
-	Other keys:
-	
-	sql_where	- the 'where' clause of the query
-	                    ( try 'where 0=1' for economy when you are simply inserting records )
-	
-	on_current	- a reference to some Perl code to run when moving to a new record
-	
-	on_apply	- a reference to some Perl code to tun *after* applying the current record
-	
-	calc_fields     - a hash of fieldnames / Perl expressions to provide calculated fields
-	
-	sql_order_by	- the 'order by' clause of the query
-	
-	apeture         - the size of the recordset slice ( in records ) to fetch into memory
-						adjust for low-memory computers
-						ONLY change this BEFORE querying
-	
-	manual_spinner  - disable automatic move() operations when the RecordSpinner is clicked
-	
-	read_only	- whether we allow updates to the recordset ( default = 0 ; updates allowed )
-	
-	defaults	- a HOH of default values to use when a new record is inserted
-	
-	quiet		- a flag to silence warnings such as missing widgets
-	
-=head2 fieldlist
-	
-	Returns a fieldlist as an array, based on the current query.
-	Mainly for internal Gtk2::Ex::DBI use
-	
-=head2 query ( [ new_where_clause ] )
-	
-	Requeries the DB server, either with the current where clause, or with a new one ( if passed ).
-	
-=head2 insert
-	
-	Inserts a new record in the *in-memory* recordset and sets up default values ( if defined ).
-	
-=head2 count
-	
-	Returns the number of records in the current recordset.
-	
-=head2 paint
-	
-	Paints the form with current data.
-	Mainly for internal Gtk2::Ex::DBI use.
-	
-=head2 move ( offset, [ absolute_position ] )
-	
-	Moves to a specified position in the recordset - either an offset, or an absolute position.
-	If an absolute position is given, the offset is ignored.
-	If there are changes to the current record, these are applied to the DB server first.
-	Returns 1 if successful, 0 if unsuccessful.
-	
-=head2 apply
-	
-	Apply changes to the current record back to the DB server.
-	Returns 1 if successful, 0 if unsuccessful.
-	
-=head2 changed
-	
-	Sets the 'changed' flag, which is used internally when deciding if an 'apply' is required.
-	
-=head2 paint_calculated
-	
-	Paints calculated fields ( if any exist ).
-	Mainly for internal Gtk2::Ex::DBI use.
-	
-=head2 revert
-	
-	Reverts the current record back to its original state.
-	Deletes the in-memory recordset if we were inserting a new record.
-	
-=head2 delete
-	
-	Deletes the current record.
-	Asks for confirmation first.
-	
-=head2 position
-	
-	Returns the current position in the keyset ( starting at zero ).
-	
-=head2 set_record_spinner_range
-	
-	Sets the min / max range of the record spinner based on the current keyset.
-	
-=head2 set_active_iter_for_broken_combo_box
-	
-	Workaround for bug http://bugzilla.gnome.org/show_bug.cgi?id=156017 ...
-	Is called automatically when the focus leaves a Gtk2::ComboBoxEntry's child.
-	
-=head2 set_defaults
-	
-	Called when a new record is inserted.
-	Currently only uses information in $self->{defaults}, which is a HOH
-	of field / default values ( see example usage above ).
-	Later on ( maybe ), we will also poll the DB server for default values.
-	
-=head2 last_insert_id
-	
-	Returns the ID of the last inserted record with an auto_incrememnt field.
-	
-=head1 BUGS
-	
-=head2 Default values in a table's definition on the DB server are ignored
-	
-	This will ( hopefully ) be fixed soon ... if feasible ... not sure if it is.
-	As a workaround, you can use the default_values hash to redefine your default values.
-	
-=head2 Formatting of examples in man page sux
-	
-	I don't know what it's problem is.
-	It looks right in my editor.
-	
-=head2 Gnome2::DateEdit IS NOT SUITABLE FOR USE if you want ability to have NULL dates
-	
-	http://bugzilla.gnome.org/show_bug.cgi?id=52372
-	
-	Above bug is 3 years old and seems dead, so don't hold your breath
-	
-	Gnome's DateEdit widget ALWAYS displays a valid date, ie:
-		- cannot display a NULL value
-		- cannot return a NULL value
-	
-	Gtk2::Ex::DBI will bail out if you try to move to a record that has a NULL date value and
-	a matching Gnome2::DateEdit, as data corruption will occur in this case.
-	
-	Perhaps I should remove support for this widget?
-	
-=head1 Other cool things you should know about
+=head2 new
 
-This module is part of a 3-some:
+Object constructor. Expects a hash of key / value pairs. Bare minimum are:
+
+dbh             - a DBI database handle
+table           - the name of the table you are querying
+primary_key     - the primary key of the table you are querying ( required for updating / deleting )
+sql_select      - the 'select' clause of the query
+form            - the Gtk2::GladeXML object that created your form
+formname        - the name of the form ( from the Glade file )
+
+The 'new' method will call the 'query' method, which will in turn move to the 1st record and paint your form.
+
+Other keys:
+
+sql_where       - the 'where' clause of the query
+                    ( try 'where 0=1' for economy when you are simply inserting records )
+
+on_current      - a reference to some Perl code to run when moving to a new record
+
+on_apply        - a reference to some Perl code to tun *after* applying the current record
+
+calc_fields     - a hash of fieldnames / Perl expressions to provide calculated fields
+
+sql_order_by    - the 'order by' clause of the query
+
+apeture         - the size of the recordset slice ( in records ) to fetch into memory
+                                 ONLY change this BEFORE querying
+
+manual_spinner  - disable automatic move() operations when the RecordSpinner is clicked
+read_only       - whether we allow updates to the recordset ( default = 0 ; updates allowed )
+defaults        - a HOH of default values to use when a new record is inserted
+quiet           - a flag to silence warnings such as missing widgets
+
+=head2 fieldlist
+
+Returns a fieldlist as an array, based on the current query.
+Mainly for internal Gtk2::Ex::DBI use
+
+=head2 query ( [ new_where_clause ] )
+Requeries the DB server, either with the current where clause, or with a new one ( if passed ).
+
+=head2 insert
+Inserts a new record in the *in-memory* recordset and sets up default values ( if defined ).
+
+=head2 count
+Returns the number of records in the current recordset.
+
+=head2 paint
+Paints the form with current data. Mainly for internal Gtk2::Ex::DBI use.
+
+=head2 move ( offset, [ absolute_position ] )
+Moves to a specified position in the recordset - either an offset, or an absolute position.
+If an absolute position is given, the offset is ignored.
+If there are changes to the current record, these are applied to the DB server first.
+Returns 1 if successful, 0 if unsuccessful.
+
+=head2 apply
+Apply changes to the current record back to the DB server.
+Returns 1 if successful, 0 if unsuccessful.
+
+=head2 changed
+Sets the 'changed' flag, which is used internally when deciding if an 'apply' is required.
+
+=head2 revert
+Reverts the current record back to its original state.
+Deletes the in-memory recordset if we were inserting a new record.
+
+=head2 delete
+Deletes the current record. Asks for confirmation first.
+
+=head2 position
+Returns the current position in the keyset ( starting at zero ).
+
+=head1 BUGS
+
+=head2 SQL Server support is *UNSTABLE*
+Previously I had claimed that this module had been tested under SQL Server.
+Now, unfortunately, I have to report that there are some bugs *somewhere* in the chain
+from DBD::ODBC to FreeTDS. In particular, 'money' column types in SQL Server will not
+work at all - SQL Server throws a type conversion error. Also I have had very strange results
+with 'decimal' column types - the 1st couple of fields are accepted, and everything after that
+ends up NULL. When I encountered this, I added the 'debug' flag to this module to dump details
+of the values being pulled from widgets and placed into our @bind_variables array. Rest assured
+that everything *here* is working fine. The problem is certainly somewhere further up the chain.
+So be warned - while some forms work quite well with SQL Server, others will *NOT*. Test first.
+Better still, don't use SQL Server.
+
+=head1 Other cool things you should know about:
+
+This module is part of an umbrella project, 'Axis Not Evil', which aims to make
+Rapid Application Development of database apps using open-source tools a reality.
+The project includes:
 
 Gtk2::Ex::DBI                 - forms
 
@@ -1219,12 +1295,8 @@ Gtk2::Ex::Datasheet::DBI      - datasheets
 
 PDF::ReportWriter             - reports
 
-Together ( and with a little help from other modules such as Gtk2::GladeXML ),
-these modules give you everything you need for rapid application development of database front-ends
-on Linux, Windows, or ( with a little frigging around ) Mac OS-X.
-
-All the above modules are available via cpan, or from:
-http://entropy.homelinux.org
+All the above modules are available via cpan, or for more information, screenshots, etc, see:
+http://entropy.homelinux.org/axis_not_evil
 
 =head1 Crank ON!
 
