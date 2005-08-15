@@ -16,22 +16,8 @@ someone who knows what they're doing ( which is why I've left them out )
 
 ---
 
-- Fetch default values from DB server: possibility in the mid-range, no burning need
-    Is this possible? Is there anything in DBI that provides default values, or do we have to parse
-	the output of a 'show create table' statement ( MySQL only ) or something?
-
----
-
-- Possible workaround for Gnome2::DateEdit's insistance on always displaying a date ( ie no NULLs ): not interested in this any more
-    Better to wait for upstream fix to what I consider a broken widget
-    
----
-
 - Adding support for more DB servers: don't have access to other DB servers / not interested
-    - Postgres
-	My last_insert_id doesn't currently work - needs a glance from someone who knows how to make it work
-	Perhaps we can use 'select @@IDENTITY' if I can't make $dbh->last_insert_id work?
     - Oracle
 	Completely untested
-	See Postgres
-	
+    - SQL Server
+	Unstable - driver issue? Works intermittently

@@ -1,5 +1,13 @@
 CHANGELOG
 
+Version 1.2, released 15-Aug-2005
+    
+    Set default values from database field definitions when inserting a new record ( ie onscreen )
+    Create a key in our records hash for each field when inserting a new record ( avoids Perl warnings about uninitialised values )
+    Removed set_defaults() - incorporated into assemble_new_record()
+    Added more eval{} stuff around DB interaction, with Gtk2::Ex::Dialog::ErrorMsg warnings when things fail
+    Gtk2::Ex::DBI->new() returns FALSE if initial query fails
+    
 Version 1.1, released 02-Aug-2005
     
     Ask user if they want to apply changes to current record before requerying ( ie don't simply apply without asking )

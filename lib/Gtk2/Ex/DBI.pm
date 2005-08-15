@@ -22,7 +22,7 @@ use Gtk2::Ex::Dialogs (
 		      );
 
 BEGIN {
-	$Gtk2::Ex::DBI::VERSION = '1.1';
+	$Gtk2::Ex::DBI::VERSION = '1.2';
 }
 
 sub new {
@@ -37,6 +37,7 @@ sub new {
 			sql_select		=> $$req{sql_select},		# The 'select' clause of the query
 			sql_where		=> $$req{sql_where},		# The 'where' clause of the query
 			sql_order_by		=> $$req{sql_order_by},		# The 'order by' clause of the query
+			schema			=> $$req{schema},		# The 'schema' to use to get column info from
 			form			=> $$req{form},			# The Gtk2-GladeXML *object* we're using
 			formname		=> $$req{formname},		# The *name* of the window ( needed for dialogs to work properly )
 			readonly		=> $$req{readonly} || 0,	# Whether changes to the table are allowed
@@ -55,9 +56,52 @@ sub new {
 	bless $self, $class;
 	
 	# Cache the fieldlist array so we don't have to continually query the DB server for it
-	my $sth = $self->{dbh}->prepare($self->{sql_select} . " from " . $self->{table} . " where 0=1");
-	$sth->execute;
+	my $sth;
+	
+	eval {
+		$sth = $self->{dbh}->prepare($self->{sql_select} . " from " . $self->{table} . " where 0=1")
+			|| die $self->{dbh}->errstr;
+	};
+	
+	if ($@) {
+		Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
+								title	=> "Error in Query!",
+								text	=> "DB Server says:\n$@"
+							);
+		return FALSE;
+	}
+	
+	eval {
+		$sth->execute || die $self->{dbh}->errstr;
+	};
+	
+	if ($@) {
+		Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
+								title	=> "Error in Query!",
+								text	=> "DB Server says:\n$@"
+							);
+		return FALSE;
+		
+	}
+	
 	$self->{fieldlist} = $sth->{'NAME'};
+	
+	$sth->finish;
+	
+	# Fetch column_info for current table
+	$sth = $self->{dbh}->column_info ( undef, $self->{schema}, $self->{table}, '%' );
+	
+	# Loop through the list of columns from the database, and
+	# add only columns that we're actually dealing with
+	while ( my $column_info_row = $sth->fetchrow_hashref ) {
+		for my $field ( @{$self->{fieldlist}} ) {
+			if ( $column_info_row->{COLUMN_NAME} eq $field ) {
+				$self->{column_info}->{$field} = $column_info_row;
+				last;
+			}
+		}
+	}
+	
 	$sth->finish;
 	
 	$self->query;
@@ -84,22 +128,22 @@ sub new {
 		if (defined $widget) {
 			my $type = (ref $widget);
 			if ($type eq "Gtk2::Calendar") {
-				$widget->signal_connect(		day_selected	=> sub { $self->changed; } );
+				$widget->signal_connect(		day_selected		=>	sub { $self->changed; } );
 			} elsif ($type eq "Gtk2::ToggleButton") {
-				$widget->signal_connect(		toggled		=> sub { $self->changed; } );
+				$widget->signal_connect(		toggled			=>	sub { $self->changed; } );
 			} elsif ($type eq "Gtk2::TextView") {
-				$widget->get_buffer->signal_connect(	changed		=> sub { $self->changed; } );
+				$widget->get_buffer->signal_connect(	changed			=>	sub { $self->changed; } );
 			} elsif ($type eq "Gtk2::ComboBoxEntry") {
-				$widget->signal_connect(		changed		=> sub { $self->changed; } );
-				$widget->get_child->signal_connect(	changed		=> sub { $self->set_active_iter_for_broken_combo_box($widget) } );
+				$widget->signal_connect(		changed			=>	sub { $self->changed; } );
+				$widget->get_child->signal_connect(	changed			=>	sub { $self->set_active_iter_for_broken_combo_box($widget) } );
 			} elsif ($type eq "Gtk2::CheckButton") {
-				$widget->signal_connect(		toggled		=> sub { $self->changed; } );
+				$widget->signal_connect(		toggled			=>	sub { $self->changed; } );
 			} elsif ($type eq "Gtk2::Entry") {
-				$widget->signal_connect(		changed		=> sub { $self->changed; } );
+				$widget->signal_connect(		changed			=>	sub { $self->changed; } );
 				# *** TODO *** enable this when we've added search functionality
-				$widget->signal_connect(		'populate-popup'=> sub { $self->build_right_click_menu(@_); } );
+				$widget->signal_connect(		'populate-popup'	=>	sub { $self->build_right_click_menu(@_); } );
 			} else {
-				$widget->signal_connect(		changed		=> sub { $self->changed; } );
+				$widget->signal_connect(		changed			=>	sub { $self->changed; } );
 			}
 		}
 	}
@@ -165,14 +209,37 @@ sub query {
 	$self->{slice_position} = undef;
 	
 	# Get an array of primary keys
-	my $sth = $self->{dbh}->prepare(
-		"select " . $self->{primarykey}
-		. " from " . $self->{table} . " "
-		. $self->{sql_where} || "" . " "
-		. $self->{sql_order_by} || ""
-				       );
+	my $sth;
 	
-	$sth->execute;
+	eval {
+		$sth = $self->{dbh}->prepare(
+						"select " . $self->{primarykey}
+						. " from " . $self->{table} . " "
+						. $self->{sql_where} || "" . " "
+						. $self->{sql_order_by} || ""
+					    )
+			|| die $self->{dbh}->errstr;
+	};
+	
+	if ($@) {
+		Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
+								title	=> "Error in Query!",
+								text	=> "DB Server says:\n$@"
+							);
+		return FALSE;
+	}
+	
+	eval {
+		$sth->execute || die $self->{dbh}->errstr;
+	};
+	
+	if ($@) {
+		Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
+								title	=> "Error in Query!",
+								text	=> "DB Server says:\n$@"
+							);
+		return FALSE;
+	}
 	
 	$self->{keyset} = ();
 	
@@ -183,12 +250,12 @@ sub query {
 	$sth->finish;
 	
 	if ( $self->{spinner} ) {
-		$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal} );
+		$self->{spinner}->signal_handler_block( $self->{record_spinner_value_changed_signal} );
 		$self->set_record_spinner_range;
-		$self->{spinner}->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
+		$self->{spinner}->signal_handler_unblock( $self->{record_spinner_value_changed_signal} );
 	}
 	
-	$self->move(0, 0);
+	$self->move( 0, 0 );
 	
 	$self->set_record_spinner_range;
 	
@@ -208,7 +275,7 @@ sub insert {
 	
 	# Open RecordSpinner range
 	if ( $self->{spinner} ) {
-		$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal} );
+		$self->{spinner}->signal_handler_block(	$self->{record_spinner_value_changed_signal} );
 		$self->{spinner}->set_range( 1, $self->count + 1 );
 		$self->{spinner}->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
 	}
@@ -218,11 +285,39 @@ sub insert {
 		return 0;
 	}
 	
-	$self->{records}[$self->{slice_position}]->{$self->{primarykey}} = "!";
-	$self->set_defaults;
-	$self->paint; # 2nd time this is called in this sub ( 1st from $self->move ) but we need to do it again to paint the default values
+	# Assemble new record and put it in place
+	$self->{records}[$self->{slice_position}] = $self->assemble_new_record;
+	
+	# Finally, paint the current recordset onto the widgets
+	# This is the 2nd time this is called in this sub ( 1st from $self->move ) but we need to do it again to paint the default values
+	$self->paint;
 	
 	return 1;
+	
+}
+
+sub assemble_new_record {
+	
+	# This sub assembles a new hash record and sets default values
+	
+	my $self = shift;
+	
+	my $new_record;
+	
+	# First, we create fields with default values from the database ...
+	foreach my $field ( keys %{$self->{column_info}} ) {
+		$new_record->{$field} = $self->{column_info}->{$field}->{COLUMN_DEF}; # COLUMN_DEF is DBI speak for 'column default'
+	}
+	
+	# ... and then we set user-defined defaults
+	foreach my $field ( keys %{$self->{defaults}} ) {		
+		$new_record->{$field} = $self->{defaults}->{$field};
+	}
+	
+	# Finally, set the insertion marker ( but don't set the changed flag until the user actually changes something )
+	$new_record->{$self->{primarykey}} = "!";
+	
+	return $new_record;
 	
 }
 
@@ -446,17 +541,14 @@ sub fetch_new_slice {
 	
 	if ($keyset_count == 0) {
 		
-		# This ( keyset_count == 0 ) will happen if we have an empty recordset in our keyset
-		# ( ie if there are no records returned ). Create an empty array. 
-		$self->{records} = ();
+		# There are no records. Create one ( with defaults and insertion marker )
 		
-		# In this case, we should also set the insertion flag, in case people want to start typing
-		# straight into the form. After all, the fields will all be blank, so people will not feel
-		# the need to hit the 'insert' button.
-		# Note that we *don't* set the changed flag, as the user may *not* insert anything at this point
+		# Note that we don't set the changed marker at this point, so if the user starts entering data,
+		# this is treated as an inserted record. However if the user doesn't enter data, and does something else
+		# ( eg another query ), this record will simply be discarded ( changed marker = 0 )
 		
-		$self->{records}[$self->{slice_position}]->{$self->{primarykey}} = "!";
-		$self->set_defaults; # Paint will happen back in the move() operation
+		# Keep in mind that this doens't take into account other requirements for a valid record ( eg foreign keys )
+		push @{$self->{records}}, $self->assemble_new_record;
 		
 	} else {
 		
@@ -483,7 +575,8 @@ sub fetch_new_slice {
 			. " from " . $self->{table}
 			. " where " . $self->{primarykey} . " in ($key_list )",
 			{Slice=>{}}					    )
-			|| die "Error in SQL:\n" . $self->{sql_select} . " from " . $self->{table} . " where " . $self->{primarykey} . " in ($key_list )\n";
+				|| die "Error in SQL:\n" . $self->{sql_select} . " from " . $self->{table}
+					. " where " . $self->{primarykey} . " in ($key_list )\n";
 		
 	}
 	
@@ -944,20 +1037,6 @@ sub set_active_iter_for_broken_combo_box {
 	
 }
 
-sub set_defaults {
-	
-	# Sets default values for fields ( called when a new record is inserted )
-	
-	my $self = shift;
-	
-	foreach my $field ( keys %{$self->{defaults}} ) {		
-		$self->{records}[$self->{slice_position}]->{$field} = $self->{defaults}->{$field};
-	}
-	
-	return 1;
-	
-}
-
 sub last_insert_id {
 	
 	my $self = shift;
@@ -1238,7 +1317,9 @@ Mainly for internal Gtk2::Ex::DBI use
 Requeries the DB server, either with the current where clause, or with a new one ( if passed ).
 
 =head2 insert
-Inserts a new record in the *in-memory* recordset and sets up default values ( if defined ).
+Inserts a new record in the *in-memory* recordset and sets up default values,
+either from the database schema, or optionally overridden with values from the
+default_values hash.
 
 =head2 count
 Returns the number of records in the current recordset.
