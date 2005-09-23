@@ -10,7 +10,7 @@ package Gtk2::Ex::DBI;
 use strict;
 use warnings;
 
-use DBI;
+#use DBI;
 use POSIX;
 
 use Glib qw/TRUE FALSE/;
@@ -22,7 +22,7 @@ use Gtk2::Ex::Dialogs (
 		      );
 
 BEGIN {
-	$Gtk2::Ex::DBI::VERSION = '1.2';
+	$Gtk2::Ex::DBI::VERSION = '1.3';
 }
 
 sub new {
@@ -40,17 +40,17 @@ sub new {
 			schema			=> $$req{schema},		# The 'schema' to use to get column info from
 			form			=> $$req{form},			# The Gtk2-GladeXML *object* we're using
 			formname		=> $$req{formname},		# The *name* of the window ( needed for dialogs to work properly )
-			readonly		=> $$req{readonly} || 0,	# Whether changes to the table are allowed
+			readonly		=> $$req{readonly} || FALSE,	# Whether changes to the table are allowed
 			apeture			=> $$req{apeture} || 100,	# The number of records to select at a time
 			on_current		=> $$req{on_current},		# A reference to code that is run when we move to a new record
 			on_apply		=> $$req{on_apply},		# A reference to code that is run *after* the 'apply' method is called
 			calc_fields		=> $$req{calc_fields},		# Calculated field definitions ( HOH )
 			defaults		=> $$req{defaults},		# Default values ( HOH )
-			quiet			=> $$req{quiet} || 0,		# A flag to silence warnings such as missing widgets
-			changed			=> 0,				# A flag indicating that the current record has been changed
-			changelock		=> 0,				# Prevents the 'changed' flag from being set when we're moving records
-			constructor_done	=> 0,				# A flag that indicates whether the new() method has completed yet
-			debug			=> $$req{debug} || 0		# Turn on to dump info to terminal
+			quiet			=> $$req{quiet} || FALSE,	# A flag to silence warnings such as missing widgets
+			changed			=> FALSE,			# A flag indicating that the current record has been changed
+			changelock		=> FALSE,			# Prevents the 'changed' flag from being set when we're moving records
+			constructor_done	=> FALSE,			# A flag that indicates whether the new() method has completed yet
+			debug			=> $$req{debug} || FALSE	# Turn on to dump info to terminal
 	};
 	
 	bless $self, $class;
@@ -153,16 +153,41 @@ sub new {
 	if ( $self->{spinner} ) {
 		
 		$self->{record_spinner_value_changed_signal}
-			= $self->{spinner}->signal_connect( value_changed	=> sub {
+			= $self->{spinner}->signal_connect( value_changed			=> sub {
 				$self->{spinner}->signal_handler_block($self->{record_spinner_value_changed_signal});
 				$self->move( undef, $self->{spinner}->get_text - 1 );
 				$self->{spinner}->signal_handler_unblock($self->{record_spinner_value_changed_signal});
-				return 1;
+				return TRUE;
 			}
 						 );
 	}
 	
-	$self->{constructor_done} = 1;
+	# Check recordset status when window is destroyed
+	$self->{form}->get_widget($self->{formname})->signal_connect(	delete_event		=> sub {
+		if ( $self->{changed} ) {
+			my $answer = Gtk2::Ex::Dialogs::Question->new_and_run(
+				title	=> "Apply changes to " . $self->{table} . " before closing?",
+				text	=> "There are changes to the current record ( " . $self->{table} . " )\n"
+					. "that haven't yet been applied. Would you like to apply them before"
+					. " closing the form?"
+									     );
+			# We return FALSE to allow the default signal handler to
+			# continue with destroying the window - all we wanted to do was check
+			# whether to apply records or not
+			if ( $answer ) {
+				if ( $self->apply ) {
+					return FALSE;
+				} else {
+					# ie don't allow the form to close if there was an error applying
+					return TRUE;
+				}
+			} else {
+				return FALSE;
+			}
+		}
+	} );
+	
+	$self->{constructor_done} = TRUE;
 	
 	$self->set_record_spinner_range;
 	
@@ -185,7 +210,7 @@ sub query {
 	my ( $self, $sql_where ) = @_;
 	
 	# Update database from current hash if necessary
-	if ($self->{changed} == 1) {
+	if ($self->{changed} == TRUE) {
 		
 		my $answer = ask Gtk2::Ex::Dialogs::Question(
 				    title	=> "Apply changes to " . $self->{table} . " before querying?",
@@ -259,7 +284,7 @@ sub query {
 	
 	$self->set_record_spinner_range;
 	
-	return 1;
+	return TRUE;
 	
 }
 
@@ -275,14 +300,14 @@ sub insert {
 	
 	# Open RecordSpinner range
 	if ( $self->{spinner} ) {
-		$self->{spinner}->signal_handler_block(	$self->{record_spinner_value_changed_signal} );
+		$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal} );
 		$self->{spinner}->set_range( 1, $self->count + 1 );
 		$self->{spinner}->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
 	}
 	
-	if (! $self->move(0, $newposition)) {
+	if ( ! $self->move( 0, $newposition ) ) {
 		warn "Insert failed ... probably because the current record couldn't be applied\n";
-		return 0;
+		return FALSE;
 	}
 	
 	# Assemble new record and put it in place
@@ -292,7 +317,7 @@ sub insert {
 	# This is the 2nd time this is called in this sub ( 1st from $self->move ) but we need to do it again to paint the default values
 	$self->paint;
 	
-	return 1;
+	return TRUE;
 	
 }
 
@@ -331,7 +356,7 @@ sub count {
 	if ( ref($self->{keyset}) eq "ARRAY" ) {
 		return scalar @{$self->{keyset}};
 	} else {
-		return 0;
+		return FALSE;
 	}
 	
 }
@@ -341,7 +366,7 @@ sub paint {
 	my $self = shift;
 	
 	# Set the changelock so we don't trigger more changes
-	$self->{changelock} = 1;
+	$self->{changelock} = TRUE;
 	
 	foreach my $field ( @{$self->{fieldlist}} ) {
 		
@@ -406,7 +431,7 @@ sub paint {
 				
 				while ($iter) {
 					if ( ( defined $self->{records}[$self->{slice_position}]->{$field} ) &&
-						( $self->{records}[$self->{slice_position}]->{$field} eq $widget->get_model->get($iter, 0)) ) {
+						( $self->{records}[$self->{slice_position}]->{$field} eq $widget->get_model->get( $iter, 0) ) ) {
 							$widget->set_active_iter($iter);
 							last;
 					}
@@ -444,7 +469,7 @@ sub paint {
 	}
 	
 	# Unlock the changelock
-	$self->{changelock} = 0;
+	$self->{changelock} = FALSE;
 	
 }
 
@@ -453,21 +478,21 @@ sub move {
 	# Moves to the requested position, either as an offset from the current position,
 	# or as an absolute value. If an absolute value is given, it overrides the offset.
 	# If there are changes to the current record, these are applied to the DB server first.
-	# Returns 1 if successful, 0 if unsuccessful.
+	# Returns TRUE ( 1 ) if successful, FALSE ( 0 ) if unsuccessful.
 	
 	my ( $self, $offset, $absolute ) = @_;
 	
 	# Update database from current hash if necessary
-	if ($self->{changed} == 1) {
+	if ($self->{changed} == TRUE) {
 		my $result = $self->apply;
-		if ($result == 0) {
+		if ( $result == FALSE ) {
 			# Update failed. If RecordSpinner exists, set it to the current position PLUS ONE.
 			if ( $self->{spinner} ) {
 				$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal});
 				$self->{spinner}->set_text( $self->position + 1 );
 				$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal});
 			}
-			return 0;
+			return FALSE;
 		}
 	}
 	
@@ -485,16 +510,16 @@ sub move {
 	} else {
 		$new_position = ( $self->position || 0 ) + $offset;
 		# Make sure we loop around the recordset if we go out of bounds.
-		if ($new_position < 0) {
+		if ( $new_position < 0 ) {
 			$new_position = $self->count - 1;
-		} elsif ($new_position > $self->count - 1) {
+		} elsif ( $new_position > $self->count - 1 ) {
 			$new_position = 0;
 		}
 	}
 	
 	# Check if we now have a sane $new_position.
 	# Some operations ( insert, then revert part-way through ... or move backwards when there are no records ) can cause this.
-	if ($new_position < 0) {
+	if ( $new_position < 0 ) {
 		$new_position = 0;
 	}
 	
@@ -522,7 +547,7 @@ sub move {
 		$self->{spinner}->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
 	}
 	
-	return 1;
+	return TRUE;
 	
 }
 
@@ -539,7 +564,7 @@ sub fetch_new_slice {
 	# Don't try to fetch records that aren't there ( at the end of the recordset )
 	my $keyset_count = $self->count; # So we don't keep running $self->count...
 	
-	if ($keyset_count == 0) {
+	if ( $keyset_count == 0 ) {
 		
 		# There are no records. Create one ( with defaults and insertion marker )
 		
@@ -585,26 +610,26 @@ sub fetch_new_slice {
 sub apply {
 	
 	# Applys the data from the current form back to the DB server.
-	# Returns 1 if successful, 0 if unsuccessful.
+	# Returns TRUE ( 1 ) if successful, FALSE ( 0 ) if unsuccessful.
 	
 	my $self = shift;
 	
-	if ($self->{readonly} == 1) {
+	if ( $self->{readonly} == TRUE ) {
 		new_and_run Gtk2::Ex::Dialogs::ErrorMsg(
 							title	=> "Read Only!",
 							text	=> "Sorry. This form is open\nin read-only mode!"
 						       );
-		return 0;
+		return FALSE;
 	}
 	
 	my $fieldlist = "";
 	my @bind_values = ();
 	
-	my $inserting = 0; # Flag that tells us whether we're inserting or updating
+	my $inserting = FALSE; # Flag that tells us whether we're inserting or updating
 	my $placeholders;  # We need to append to the placeholders while we're looping through fields, so we know how many fields we actually have
 	
-	if ($self->{records}[$self->{slice_position}]->{$self->{primarykey}} eq "!") {
-		$inserting = 1;
+	if ( $self->{records}[$self->{slice_position}]->{$self->{primarykey}} eq "!" ) {
+		$inserting = TRUE;
 	}
 	
 	foreach my $field ( @{$self->{fieldlist}} ) {
@@ -617,7 +642,7 @@ sub apply {
 		
 		my $widget = $self->{form}->get_widget($field);
 		
-		if (defined $widget) {
+		if ( defined $widget ) {
 			
 			if ($inserting) {
 				$fieldlist .= " $field,";
@@ -632,12 +657,12 @@ sub apply {
 				print "   ... widget type: $type\n";
 			}
 			
-			if ($type eq "Gtk2::Calendar") {
+			if ( $type eq "Gtk2::Calendar" ) {
 				
 				my ( $year, $month, $day ) = $widget->get_date;
 				my $date;
 				
-				if ($day > 0) {
+				if ( $day > 0 ) {
 					
 					# NOTE! NOTE! Apparently GtkCalendar has the months starting at ZERO!
 					# Therefore, add one to the month...
@@ -661,15 +686,15 @@ sub apply {
 				$current_value = $date;
 				
 				
-			} elsif ($type eq "Gtk2::ToggleButton") {
+			} elsif ( $type eq "Gtk2::ToggleButton" ) {
 				
-				if ($widget->get_active) {
+				if ( $widget->get_active ) {
 					$current_value = 1;
 				} else {
 					$current_value = 0;
 				}
 				
-			} elsif ($type eq "Gtk2::ComboBoxEntry") {   
+			} elsif ( $type eq "Gtk2::ComboBoxEntry" ) {   
 				
 				my $iter = $widget->get_active_iter;                
 				
@@ -677,11 +702,11 @@ sub apply {
 				# onto @bind_values,  otherwise test the column type.
 				# If we find a "Glib::Int" column type, we push a zero onto @bind_values otherwise 'undef'
 				
-				if (defined $iter) {
-					$current_value = $widget->get_model->get($iter, 0);
+				if ( defined $iter ) {
+					$current_value = $widget->get_model->get( $iter, 0 );
 				} else {                    
 					my $columntype = $widget->get_model->get_column_type(0);                    
-					if ($columntype eq "Glib::Int") {
+					if ( $columntype eq "Glib::Int" ) {
 						$current_value = 0;
 					} else {
 						$current_value = undef;
@@ -692,7 +717,7 @@ sub apply {
 				
 				my $textbuffer = $widget->get_buffer;
 				my ( $start_iter, $end_iter ) = $textbuffer->get_bounds;
-				$current_value = $textbuffer->get_text($start_iter, $end_iter, 1);
+				$current_value = $textbuffer->get_text( $start_iter, $end_iter, 1 );
 				
 			} elsif ($type eq "Gtk2::CheckButton") {
 				
@@ -756,10 +781,10 @@ sub apply {
 			# Dialog explaining error...
 			new_and_run Gtk2::Ex::Dialogs::ErrorMsg(
 									title   => "Error updating recordset!",
-									text    => "Database Server says:\n" . $self->{dbh}->errstr
+									text    => "Database Server says:\n" . $@
 							       );
 			warn "Error updating recordset:\n$update_sql\n@bind_values\n" . $@ . "\n\n";
-			return 0;
+			return FALSE;
 	}
 	
 	my $recordstatus = $self->{form}->get_widget("lbl_RecordStatus");
@@ -783,9 +808,9 @@ sub apply {
 			$widget->set_text($inserted_id); # Assuming the widget has a set_text method of course ... can't see when this wouldn't be the case
 		}
 		
-		$widget->signal_handler_block(		$self->{record_spinner_value_changed_signal} );
+		$self->{changelock} = FALSE;
 		$self->set_record_spinner_range;
-		$widget->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
+		$self->{changelock} = FALSE;
 		
 	}
 	
@@ -804,12 +829,12 @@ sub apply {
 				my ( $year, $month, $day ) = $widget->get_date;
 				my $date;
 				
-				if ($day > 0) {
+				if ( $day > 0 ) {
 					$month ++;
-					if (length($month) == 1) {
+					if ( length($month) == 1 ) {
 						$month = "0" . $month;
 					}
-					if (length($day) == 1) {
+					if ( length($day) == 1 ) {
 						$day = "0" . $day;
 					}
 					$date = $year . "-" . $month . "-" . $day;
@@ -827,30 +852,30 @@ sub apply {
 					$self->{records}[$self->{slice_position}]->{$field} = 0;
 				}
 				
-			} elsif ($type eq "Gtk2::ComboBoxEntry") {
+			} elsif ( $type eq "Gtk2::ComboBoxEntry" ) {
 				
 				my $iter = $widget->get_active_iter;
 				
-				if (defined $iter) {
-					$self->{records}[$self->{slice_position}]->{$field} = $widget->get_model->get($widget->get_active_iter, 0);
+				if ( defined $iter ) {
+					$self->{records}[$self->{slice_position}]->{$field} = $widget->get_model->get( $widget->get_active_iter, 0 );
 				} else {
 					my $columntype = $widget->get_model->get_column_type(0);
-					if ($columntype eq "Glib::Int") {
+					if ( $columntype eq "Glib::Int" ) {
 						$self->{records}[$self->{slice_position}]->{$field} = 0;
 					} else {
 						$self->{records}[$self->{slice_position}]->{$field} = undef;
 					}
 				}
 				
-			} elsif ($type eq "Gtk2::TextView") {
+			} elsif ( $type eq "Gtk2::TextView" ) {
 				
 				my $textbuffer = $widget->get_buffer;
 				my ( $start_iter, $end_iter ) = $textbuffer->get_bounds;
-				$self->{records}[$self->{slice_position}]->{$field} = $textbuffer->get_text($start_iter, $end_iter, 1);
+				$self->{records}[$self->{slice_position}]->{$field} = $textbuffer->get_text( $start_iter, $end_iter, 1 );
 				
-			} elsif ($type eq "Gtk2::CheckButton") {
+			} elsif ( $type eq "Gtk2::CheckButton" ) {
 				
-				if ($widget->get_active) {
+				if ( $widget->get_active ) {
 					$self->{records}[$self->{slice_position}]->{$field} = 1;
 				} else {
 					$self->{records}[$self->{slice_position}]->{$field} = 0;
@@ -864,14 +889,14 @@ sub apply {
 		}
 	}
 	
-	$self->{changed} = 0;
+	$self->{changed} = FALSE;
 	
 	# Execute external an_apply code
 	if ($self->{on_apply}) {
 		$self->{on_apply}();
 	}
 	
-	return 1;
+	return TRUE;
 	
 }
 
@@ -881,12 +906,12 @@ sub changed {
 	
 	my $self = shift;
 	
-	if ($self->{changelock} == 0) {
+	if ( $self->{changelock} == FALSE ) {
 		my $recordstatus = $self->{form}->get_widget("lbl_RecordStatus");
 		if (defined $recordstatus) {
 			$recordstatus->set_markup('<b><span color="red">Changed</span></b>');
 		}
-		$self->{changed} = 1;
+		$self->{changed} = TRUE;
 		$self->paint_calculated;
 	}
 	
@@ -908,9 +933,9 @@ sub paint_calculated {
 			}
 		} else {
 			if (ref $widget eq "Gtk2::Entry" || ref $widget eq "Gtk2::Label") {
-				$self->{changelock} = 1;
-				$widget->set_text($calc_value || "");
-				$self->{changelock} = 0;
+				$self->{changelock} = TRUE;
+				$widget->set_text($calc_value || 0);
+				$self->{changelock} = FALSE;
 			} else {
 				warn "FIXME: Unknown widget type in Gtk2::Ex::DBI::paint_calculated: " . ref $widget . "\n";
 			}
@@ -928,7 +953,7 @@ sub revert {
 	if ($self->{records}[$self->{slice_position}]->{$self->{primarykey}} eq "!") {
 		# This looks like a new record. Delete it and roll back one record
 		my $garbage_record = pop @{$self->{records}};
-		$self->{changed} = 0;
+		$self->{changed} = FALSE;
 		# Force a new slice to be fetched when we move(), which in turn handles with possible problems
 		# if there are no records ( ie we want to put the insertion marker '!' back into the primary
 		# key if there are no records )
@@ -936,7 +961,7 @@ sub revert {
 		$self->move(-1);
 	} else {
 		# Existing record
-		$self->{changed} = 0;
+		$self->{changed} = FALSE;
 		$self->move(0);
 	}
 	
@@ -963,11 +988,11 @@ sub delete {
 								title	=> "Error Deleting Record!",
 								text	=> "DB Server says:\n$@"
 						       );
-		return 0;
+		return FALSE;
 	}
 	
 	# Cancel any updates ( if the user changed something before pressing delete )
-	$self->{changed} = 0;
+	$self->{changed} = FALSE;
 	
 	# First remove the record from the keyset
 	splice(@{$self->{keyset}}, $self->position, 1);
@@ -1002,11 +1027,11 @@ sub set_record_spinner_range {
 	
 	if ( $self->{spinner} ) {
 		$self->{spinner}->signal_handler_block(		$self->{record_spinner_value_changed_signal} );
-		$self->{spinner}->set_range(1, $self->count);
+		$self->{spinner}->set_range( 1, $self->count );
 		$self->{spinner}->signal_handler_unblock(	$self->{record_spinner_value_changed_signal} );
 	}
 	
-	return 1;
+	return TRUE;
 	
 }
 
@@ -1023,9 +1048,9 @@ sub set_active_iter_for_broken_combo_box {
 	my $iter = $model->get_iter_first;
 	
 	while ($iter) {
-		if ($string eq $model->get($iter, 1)) {
+		if ( $string eq $model->get( $iter, 1 ) ) {
 			$widget->set_active_iter($iter);
-			if ($iter != $current_iter) {
+			if ( $iter != $current_iter ) {
 				$self->changed;
 			}
 			last;
@@ -1033,7 +1058,7 @@ sub set_active_iter_for_broken_combo_box {
 		$iter = $model->iter_next($iter);
 	}
 	
-	return 0; # Apparently we must return FALSE so the entry get the event as well
+	return FALSE; # Apparently we must return FALSE so the entry get the event as well
 	
 }
 
@@ -1068,27 +1093,19 @@ sub build_right_click_menu {
 	my ( $self, $widget, $menu ) = @_;
 	
 	# The 'find' menu item
-	my $menu_item = Gtk2::ImageMenuItem->new_from_stock("gtk-find");
-	$menu_item->signal_connect( activate => sub { $self->find_dialog($widget); } );
-	$menu->append($menu_item);
-	$menu_item->show;
+#	my $menu_item = Gtk2::ImageMenuItem->new_from_stock("gtk-find");
+#	$menu_item->signal_connect( activate => sub { $self->find_dialog($widget); } );
+#	$menu->append($menu_item);
+#	$menu_item->show;
 	
 	# The 'calculator' menu item
-	$menu_item = Gtk2::ImageMenuItem->new("Calculator");
+	my $menu_item = Gtk2::ImageMenuItem->new("Calculator");
 	my $pixbuf = $widget->render_icon( "gtk-index", "menu" );
 	my $image = Gtk2::Image->new_from_pixbuf($pixbuf);
 	$menu_item->set_image($image);
 	$menu_item->signal_connect( activate => sub { $self->calculator($widget); } );
 	$menu->append($menu_item);
 	$menu_item->show;
-	
-}
-
-sub find_dialog {
-	
-	# Pops up a find dialog for the user to search the *existing* recordset
-	my ( $self, $widget ) = @_;
-	print "\nGtk2::Ex::DBI - User has selected 'find' from a Gtk2::Entry ...\n ... ( functionality not yet added - see TODO )\n\n";
 	
 }
 
@@ -1185,9 +1202,9 @@ sub calculator_process_editing {
 	my $new_iter = $model->append;
 	
 	$treeview->set_cursor(
-		$model->get_path( $new_iter ),
-		$column,
-		TRUE
+				$model->get_path( $new_iter ),
+				$column,
+				TRUE
 			     );
 	
 	# Calculate total and display
@@ -1195,8 +1212,8 @@ sub calculator_process_editing {
 	my $current_total;
 	
 	while ( $iter ) {
-		$current_total += $model->get( $iter, 0 );
-		$iter = $model->iter_next( $iter );
+				$current_total += $model->get( $iter, 0 );
+				$iter = $model->iter_next( $iter );
 	}
 	
 	$total_widget->set_text( $current_total );
@@ -1237,6 +1254,7 @@ my $data_handler = Gtk2::Ex::DBI->new( {
             form        => $prospects,
             formname    => "Prospects",
             on_current  => \&Prospects_current,
+            schema      => "sales",
             calc_fields =>
             {
                         calc_total => 'eval { $self->{form}->get_widget("value_1")->get_text
@@ -1307,6 +1325,8 @@ manual_spinner  - disable automatic move() operations when the RecordSpinner is 
 read_only       - whether we allow updates to the recordset ( default = 0 ; updates allowed )
 defaults        - a HOH of default values to use when a new record is inserted
 quiet           - a flag to silence warnings such as missing widgets
+schema          - the schema to query to get field details ( defaults, column types )
+                                 doesn't seem to be required for MySQL
 
 =head2 fieldlist
 

@@ -1,5 +1,13 @@
 CHANGELOG
 
+Version 1.3, released 20-Sep-2005
+    
+    Dialog question asking user whether to apply if window is closed with unapplied changes to recordset
+    Fixed setting of calculated field if result of calculation is 0
+    Fixed dialog description of DBI error message if apply fails
+    Fixed bug in trying to block non-existant signal when setting a primary key retrieved from an insert
+    Replaced remaining 0s and 1s to FALSEs and TRUEs
+    
 Version 1.2, released 15-Aug-2005
     
     Set default values from database field definitions when inserting a new record ( ie onscreen )
