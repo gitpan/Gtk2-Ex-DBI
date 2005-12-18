@@ -1,8 +1,26 @@
 CHANGELOG
 
-Version 1.3, released 20-Sep-2005
+Version 2.0, released 19-Dec-2005
+    
+    Overhaul SQL clause handling - now all SQL-related stuff is in the 'sql' hash ( see docs )
+    Added support for placeholders in where clause
+    Added legacy mode to support 1.x requests
+    Added find tool ( right-click in a widget and select 'find', or call find_dialog() ) for user searches
+    Added detection of primary key from column_info() ( MySQL only at present )
+    Added destroy method, which destroys all signal handlers we've created, then destroys itself
+    Don't modify $self->{sql}->{select} in fetch_new_slice - assemble $local_sql and modify that
+    Added missing 'order by' string to fetch_new_slice ... I was wondering what was up with that :)
+    Change suspicious signal_connect calls to signal_connect_after ( avoid GtkEntry focus-out-event error )
+    Remove unnecessary signal_handler_block() and signal_handler_unblock() calls before set_record_spinner_range()
+    Delete records in $self->{records} before querying ( fixes display of 'stale' records if query() returns no records )
+    Fixed rare bug in display of 'stale' record if there's only 1 record, and it gets deleted
+    Added method undo(), which is a synonym of revert()
+    Updated documentation & cleaned up POD somewhat
+    
+Version 1.3, released 16-Sep-2005
     
     Dialog question asking user whether to apply if window is closed with unapplied changes to recordset
+    Added support for placeholders in sql_where clause ( avoid SQL injection )
     Fixed setting of calculated field if result of calculation is 0
     Fixed dialog description of DBI error message if apply fails
     Fixed bug in trying to block non-existant signal when setting a primary key retrieved from an insert

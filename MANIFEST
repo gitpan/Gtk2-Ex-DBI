@@ -6,3 +6,4 @@ MANIFEST
 t/Gtk2-Ex-DBI.t
 TODO
 META.yml                                 Module meta-data (added by MakeMaker)
+readme.txt
