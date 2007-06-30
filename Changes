@@ -1,5 +1,66 @@
 CHANGELOG
 
+Version 2.1, released 01-Jul-2007
+    
+    Added debugging messages for signal connection / disconnection
+    Fixed bug in disconnecting signal from a textview's buffer
+    Check if a combo has a model before trying to get an iter; warn if no model present
+    Optimisation: don't keep calling $widget->get_model ... keep model around for re-use
+    Add primary key detection for SQL Server ( and re-enables SQL Server support which was completely broken )
+    Fixed bug in disconnecting signal from a ComboBoxEntry's child entry widget
+    Added setup_combo() for creating / refreshing combo models & setting up autocompletion
+    Added 'Find' right-click menu item for ComboBoxEntry's children
+    Added 'Refresh Combo' right-click menu item for ComboBoxEntry's children we have setup definitions for
+    Added get_widget_value method and use it in apply method ( remove code duplication )
+    Added set_widget_value method and use it in paint method ( remove code duplication )
+    Renamed 'readonly' option to 'read_only' ( and added legacy support with warning )
+    Added data-driven record locking ( via data_lock_field ), lock() and unlock() methods
+    'tab-forward' when an Enter key is pressed instead of leaving the focus in the current field
+    Fixed rare off-by-one error in fetch_new_slice() that was creating invalid SQL
+    Added record_status_label_set() to handle setting the record status label, and added some more colour
+    Fixed nuking of where object in constructor
+    Added reset_record_status() to reset 'changed' flag ( so Gtk2::Ex::DBI considers the record synchronised )
+    Added more error handling in constructor ( die with a descriptive error if we're missing something )
+    Removed duplicate set_record_spinner_range() in query()
+    Added support for pass_through queries that return a recordset ( including stored procedures ) - read_only
+    Added 'status_label' key to allow you to specify a label ( by name ) to use to indicate the record status
+    Don't include identity columns in insert / update SQL ( fixes SQL Server updates )
+    Added 'record_spinner' key to allow you to specify a SpinButton ( by name ) to use as the record spinner
+    Added ability to pass a new where object to setup_combo
+    Added 'widgets' hash, to store metadata about fields
+    Added support for using SQL aliases ( select field as alternative_field ) and binding to the alias
+    Suppress more non-fatal warnings when quiet mode is activated
+    Added support for custom 'before_apply' function, which can block the apply method
+    Dump $local_sql to console via warn() if query() fails and debug is set
+    Added support for using a set of SpinButtons to create 1 TimeSpinner ( experimental )
+    Replaced padding code with sprintf()
+    Added friendly_table_name key to override $self->{sql}->{from} in GUI errors
+    Added date_only input formatter
+    Added currency input formatter
+    Added date_dd-mm-yyyy input formatter
+    Added parser for SQL Server default definitions
+    INCOMPATIBLE CHANGE:
+       get_column_value() now returns an ARRAY if multi_select is turned on
+    Populate the widgets hash and the sql_to_widget_map hash with details of the primary key after detection
+    Added date_dd-mm-yyyy output formatter
+    Disable 'find' menu item in right-click menu of widgets for pass-through queries
+    Don't require a formname - if one isn't passed, get the 1st window title from the Glade XML object
+    Added currency output_formatter
+    Imported more robust primary key detection from Gtk2::Ex::Datasheet::DBI
+    Don't set the changed flag if we're in read_only mode
+    Added 'type' key to widgets hash and automatically set up input / output formatters based on type
+    Added sum_widgets()
+    Fixed bug in inserting a record when we're at the end of the keyset
+    Simplified apply() and improved debugging output
+    Strip dollar signs from values in formatter_number() - we add our own if requested
+    Added DBD::SQLite support
+    Added original_value()
+    
+    Patches from DLB:
+        Add support for Postgres:
+            Set search path in constructor when Postgres driver detected
+            Add support for Postgres in last_insert_id()
+    
 Version 2.0, released 19-Dec-2005
     
     Overhaul SQL clause handling - now all SQL-related stuff is in the 'sql' hash ( see docs )
@@ -45,7 +106,7 @@ Version 1.1, released 02-Aug-2005
     Withdrew claim that we work with SQL Server ( see man page )
     Removed unnecessary documentation of internal functions
     Removed support for Gnome2::DateEdit, which is not suitable for database use due to it's handling of NULL values
-	See http://bugzilla.gnome.org/show_bug.cgi?id=169787
+    See http://bugzilla.gnome.org/show_bug.cgi?id=169787
     
 Version 1.0, released 10-Jun-2005
     
@@ -64,8 +125,8 @@ Version 0.9, released 11-May-2005
 Version 0.8, released 10-Mar-2005
     
     INCOMPATIBLE CHANGE: don't call on_current while we're constructing ourself - external code won't be able to 'see' us yet
-	Added constructor_done flag to indicate whether we have been returned to the calling code yet
-	You should manually call the on_current code immediately *after* the object constructor ... when your Gtk2::Ex::DBI object will be available
+    Added constructor_done flag to indicate whether we have been returned to the calling code yet
+    You should manually call the on_current code immediately *after* the object constructor ... when your Gtk2::Ex::DBI object will be available
     Added method of running external code before applying changes to the current record ( on_apply - similar to on_current )
     Apply changes to the current record before requerying ( query method )
     Properly handle empty recordsets in count method
@@ -96,17 +157,17 @@ Version 0.6, released 18-Jan-2005
     Added ( dodgy ) workaround for http://bugzilla.gnome.org/show_bug.cgi?id=52372 - we bail out :)
     Documentation additions / cleanups
     Got website back online at http://entropy.homelinux.org after a large outage
-	( I was in Cambodia for a month, and someone stole my hostname after it expired )
+    ( I was in Cambodia for a month, and someone stole my hostname after it expired )
     
 Version 0.5, released 22-Nov-2004
 
     Reformatted all indentation & removed a lot of whitespace ( big change, I know ). Now looks outstanding in ActiveState's Komodo :)
     Removed attempted locking of fields if 'read_only' is set.
-	Only worked for a few widgets, and I don't see much point anyway - 'apply' method still honours 'read_only' status
+    Only worked for a few widgets, and I don't see much point anyway - 'apply' method still honours 'read_only' status
     Fixed support for Gtk2::TextView - now we connect to TextBuffer's 'changed' signal
     Added support for DBI's last_insert_id() method. This brings us one step closer to supporting DB servers other than MySQL.
-	Still requires some *very* small additions ( eg last_insert_id() on Postgres requires some arguments to be passed )
-	Volunteers? I don't use Postgres
+    Still requires some *very* small additions ( eg last_insert_id() on Postgres requires some arguments to be passed )
+    Volunteers? I don't use Postgres
     Added POD documentation - some formatting issues, not enough time to figure out what's up
     
 Version 0.4, released 22-Oct-2004
@@ -122,7 +183,7 @@ Version 0.3, released 14-Oct-2004
     *** Added dependancy*** : Gtk2::Ex::Dialogs - used instead of my own ( admittedly dodgy ) msgbox() function
     Added 'fieldlist' method, which returns a list of fields ( taken from the DB server )
     'apply' and 'paint' methods now use $self->fieldlist which is far more robust than looking at the current position's fieldlist
-	( in some cases will only contain the primary key )
+    ( in some cases will only contain the primary key )
     Removed dependance on 'stuff.pm'. Moved date_from_GtkCalendar and date_to_GtkCalendar functionality back into Gtk2::Ex::DBI ( maybe should be another package? )
     Added ExtUtils::MakeMaker support for installation
     

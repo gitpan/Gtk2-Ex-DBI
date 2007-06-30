@@ -8,4 +8,4 @@ POD documentation ( man Gtk2::Ex::DBI does it on
 my system ).
 
 For more info, see the project's homepage:
-http://entropy.homelinux.org/axis_not_evil
+http://entropy.homelinux.org/axis
