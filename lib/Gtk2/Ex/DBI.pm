@@ -1,15 +1,18 @@
-# (C) Daniel Kasak: dan@entropy.homelinux.org
+# (C) Daniel Kasak: d.j.kasak.dk@gmail.com
 # See COPYRIGHT file for full license
-
-# See 'man Gtk2::Ex::DBI' for full documentation ... or of course continue reading
 
 package Gtk2::Ex::DBI;
 
 use strict;
-#use warnings;
-no warnings;
+use warnings;
+#no warnings;
+
+use Carp;
+use Data::Dumper;
 
 use POSIX;
+use XML::Simple;
+use Time::HiRes;
 use Glib qw/TRUE FALSE/;
 
 use Gtk2::Ex::Dialogs (
@@ -19,45 +22,86 @@ use Gtk2::Ex::Dialogs (
 );
 
 BEGIN {
-    $Gtk2::Ex::DBI::VERSION = '2.1';
+    $Gtk2::Ex::DBI::VERSION = '2.30';
 }
 
 sub new {
    	
-	my ( $class, $req ) = @_;
+	my ( $class, $req, $xml_options ) = @_;
 	
-	# Assemble object from request
-	my $self = {
-		dbh                     => $$req{dbh},                                  # A database handle
-		primary_key             => $$req{primary_key},                          # The primary key ( needed for inserts / updates )
-		sql                     => $$req{sql},                                  # A hash of SQL related stuff
-		widgets                 => $$req{widgets},                              # A hash of field definitions and stuff
-		schema                  => $$req{schema},                               # The 'schema' to use to get column info from
-		form                    => $$req{form},                                 # The Gtk2-GladeXML *object* we're using
-		formname                => $$req{formname},                             # The *name* of the window ( needed for dialogs to work properly )
-		read_only               => $$req{read_only} || FALSE,                   # Whether changes to the table are allowed
-		apeture                 => $$req{apeture} || 100,                       # The number of records to select at a time
-		on_current              => $$req{on_current},                           # A reference to code that is run when we move to a new record
-		before_apply            => $$req{before_apply},                         # A reference to code that is run *before* the 'apply' method is called
-		on_apply                => $$req{on_apply},                             # A reference to code that is run *after* the 'apply' method is called
-		on_undo                 => $$req{on_undo},                              # A reference to code that is run *after* teh 'undo' method is called
-		on_changed              => $$req{on_changed},                           # A reference to code that is run *every* time a managed field is changed
-		on_initial_changed      => $$req{on_initial_changed},                   # A reference to code that is run when the recordset status *initially* changes to CHANGED 
-		calc_fields             => $$req{calc_fields},                          # Calculated field definitions
-		defaults                => $$req{defaults},                             # Default values
-		disable_find            => $$req{disable_find} || FALSE,                # Do we build the right-click 'find' item on GtkEntrys?
-		disable_full_table_find => $$req{disable_full_table_find} || FALSE,     # Can the user search the whole table ( sql=>{from} ) or only the current recordset?
-		combos                  => $$req{combos},                               # Definitions to set up combos
-		data_lock_field         => $$req{data_lock_field} || undef,             # A field to use as a data-driven lock ( positive values will lock the record )
-		status_label            => $$req{status_label} || "lbl_RecordStatus",   # The name of a field to use as the record status indicator
-		record_spinner          => $$req{record_spinner} || "RecordSpinner",    # The name of a GtkSpinButton to use as the RecordSpinner
-		quiet                   => $$req{quiet} || FALSE,                       # A flag to silence warnings such as missing widgets
-		friendly_table_name     => $$req{friendly_table_name},                  # Table name to use when issuing GUI errors
-		changed                 => FALSE,                                       # A flag indicating that the current record has been changed
-		changelock              => FALSE,                                       # Prevents the 'changed' flag from being set when we're moving records
-		constructor_done        => FALSE,                                       # A flag that indicates whether the new() method has completed yet
-		debug                   => $$req{debug} || FALSE                        # Dump info to terminal
-	};
+	my $self;
+	
+	if ( ref $req eq "HASH" ) {
+    	
+    	# Assemble object from request
+    	$self = {
+            dbh                     => $$req{dbh}                                  # A database handle
+    	  , primary_keys            => $$req{primary_keys}                         # An array of primary keys
+          , sql                     => $$req{sql}                                  # A hash of SQL related stuff
+          , widgets                 => $$req{widgets}                              # A hash of field definitions and stuff
+          , schema                  => $$req{schema}                               # The 'schema' to use to get column info from
+          , builder                 => $$req{builder}                              # The Gtk2-Builder object ... use either this or 'form', below
+          , form                    => $$req{form}                                 # The Gtk2-GladeXML *object* we're using
+          , formname                => $$req{formname}                             # The *name* of the window ( needed for dialogs to work properly )
+          , read_only               => $$req{read_only} || FALSE                   # Whether changes to the table are allowed
+          , apeture                 => $$req{apeture} || 100                       # The number of records to select at a time
+          , on_current              => $$req{on_current}                           # A reference to code that is run when we move to a new record
+          , before_query            => $$req{before_query}                         # A reference to code that is run *before* a query is executed ( can abort the query )
+          , before_apply            => $$req{before_apply}                         # A reference to code that is run *before* the 'apply' method is called
+          , on_apply                => $$req{on_apply}                             # A reference to code that is run *after* the 'apply' method is called
+          , on_undo                 => $$req{on_undo}                              # A reference to code that is run *after* teh 'undo' method is called
+          , on_changed              => $$req{on_changed}                           # A reference to code that is run *every* time a managed field is changed
+          , on_initial_changed      => $$req{on_initial_changed}                   # A reference to code that is run when the recordset status *initially* changes to CHANGED 
+          , auto_apply              => $$req{auto_apply}                           # Boolean to force all records to be applied automatically when querying, closing, etc
+          , calc_fields             => $$req{calc_fields}                          # Calculated field definitions
+          , defaults                => $$req{defaults}                             # Default values
+          , disable_find            => $$req{disable_find} || FALSE                # Do we build the right-click 'find' item on GtkEntrys?
+          , disable_full_table_find => $$req{disable_full_table_find} || FALSE     # Can the user search the whole table ( sql=>{from} ) or only the current recordset?
+          , combos                  => $$req{combos}                               # Definitions to set up combos
+          , autocompletions         => $$req{autocompletions}                      # Definitions to set up autocompletions
+          , data_lock_field         => $$req{data_lock_field} || undef             # A field to use as a data-driven lock ( positive values will lock the record )
+          , status_label            => $$req{status_label} || "lbl_RecordStatus"   # The name of a field to use as the record status indicator
+          , record_spinner          => $$req{record_spinner} || "RecordSpinner"    # The name of a GtkSpinButton to use as the RecordSpinner
+          , quiet                   => $$req{quiet} || FALSE                       # A flag to silence warnings such as missing widgets
+          , friendly_table_name     => $$req{friendly_table_name}                  # Table name to use when issuing GUI errors
+          , custom_changed_text	    => $$req{custom_changed_text}                  # Text ( including markup ) to use in GUI questions when changes need to be applied
+          , changed                 => FALSE                                       # A flag indicating that the current record has been changed
+          , changelock              => FALSE                                       # Prevents the 'changed' flag from being set when we're moving records
+          , constructor_done        => FALSE                                       # A flag that indicates whether the new() method has completed yet
+          , debug                   => $$req{debug} || FALSE                       # Dump info to terminal
+          , skip_query              => $$req{skip_query}                           # Don't call query() in the constructor
+          , dont_update_keys        => $$req{dont_update_keys}                     # Don't include primary keys in update statements
+          , widget_prefix           => $$req{widget_prefix}                        # A string to prefix ( glade ) widget names with when searching for them
+          , auto_incrementing       => $$req{auto_incrementing}                    # A flag to indicate whether we should try to poll the last inserted ID after an insert
+    	};
+    	
+	} else {
+	    
+	    # Assume we're loading an XML
+	    my $xml_cfg = XML::Simple->new(
+            AttrIndent          => TRUE,                    # XML formatting option - doesn't affect performance
+            OutputFile          => $self->{xml_file},
+            KeyAttr             => [ ]                      # Stops XML::Simple from squishing some data structures
+        );
+        
+        $self = $xml_cfg->XMLin( $req );
+        
+        # Attach to the libglade / builder object
+        if ( exists $xml_options->{glade_xml} ) {
+            $self->{form} = $xml_options->{glade_xml};
+        } elsif ( exists $xml_options->{gtk_builder} ) {
+        	$self->{builder} = $xml_options->{gtk_builder};
+        }
+        
+        
+        # Link DBI connections
+        $self->{dbh} = $xml_options->{connections}->{ $self->{Connection} };
+        
+        foreach my $combo ( keys %{$self->{combos}} ) {
+            $self->{combos}->{$combo}->{alternate_dbh} = $xml_options->{connections}->{ $self->{combos}->{$combo}->{connection_name} };
+        }
+        
+	}
 	
 	my $legacy_warnings;
 	
@@ -66,31 +110,44 @@ sub new {
 	}
 	
 	# Check we've been passed enough stuff to continue ...
-	foreach my $item qw ( dbh form ) {
-		if ( ! $self->{$item} ) {
-			die "Gtk2::Ex::DBI constructor missing a $item!\n";
-    	}
+	
+	if ( ! $self->{dbh} ) {
+        croak( "Gtk2::Ex::DBI constructor missing a dbh!\n" );
+    }
+	
+	if ( ! $self->{form} && ! $self->{builder} ) {
+		croak( "Gtk2::Ex::DBI constructor missing a 'form' ( Gtk2::GladeXML ) and a 'builder' ( Gtk2::Builder ) ..."
+		  . " You need one or the other" );
 	}
 	
     # Set window object for later ( optionally based on legacy 'formname' string )
     if ( ! $self->{formname} ) {
-        foreach my $item ( $self->{form}->get_widget_prefix("") ) {
-            if ( ref $item eq "Gtk2::Window" ) {
-                $self->{window} = $item;
-                last;
+        if ( exists $self->{form} && ref $self->{form} eq "Gtk2::GladeXML" ) {
+            foreach my $item ( $self->{form}->get_widget_prefix( "" ) ) {
+                if ( ref $item eq "Gtk2::Window" || ref $item eq "Gtk2::Dialog") {
+                    $self->{window} = $item;
+                    last;
+                }
+            }
+        } elsif ( exists $self->{builder} && ref $self->{builder} eq "Gtk2::Builder" ) {
+            foreach my $item ( $self->{builder}->get_objects() ) {
+                if ( ref $item eq "Gtk2::Window" || ref $item eq "Gtk2::Dialog") {
+                    $self->{window} = $item;
+                    last;
+                }
             }
         }
         # Now check that we have a window
         if ( ! $self->{window} ) {
-            die "Gtk2::Ex::DBI wasn't passed a formname,"
-                . " AND failed to find a Gtk2::Window to manage!\n";
+            croak( "Gtk2::Ex::DBI wasn't passed a formname,"
+                . " AND failed to find a Gtk2::Window or Gtk2::Dialog to manage!\n" );
         }
     } else {
         # This doens't really warrant a 'legacy warnings' type thing, but a warning anyway ...
-        warn "\nThe formname key in now depreciated. Gtk2::Ex::DBI can now find"
+        carp( "\nThe formname key in now depreciated. Gtk2::Ex::DBI can now find"
             . " the Gtk2::Window object to manage without being passed a formname ... but make"
-            . " sure you only have ONE GtkWindow object per GladeXML file ( for many reasons ).\n";
-        $self->{window} = $self->{form}->get_widget( $self->{formname} );
+            . " sure you only have ONE GtkWindow object per GladeXML file ( for many reasons ).\n" );
+        $self->{window} = $self->get_widget( $self->{formname} );
 	}
     
     if ( $self->{sql} ) {
@@ -98,58 +155,63 @@ sub new {
             # pass_throughs are read-only at the moment ... it's all a bit hackish
             $self->{read_only} = TRUE;
         } elsif ( ! ( exists $self->{sql}->{select} && exists $self->{sql}->{from} ) ) {
-            die "Gtk2::Ex::DBI constructor missing a complete sql definition!\n"
+            croak( "Gtk2::Ex::DBI constructor missing a complete sql definition!\n"
                 . "You either need to specify a pass_through key ( 'pass_through' )\n"
-                . "or BOTH a 'select' AND and a 'from' key\n";
+                . "or BOTH a 'select' AND and a 'from' key\n" );
         }
     }
     
-    if ( exists $$req{readonly} ) {
-        warn "\n\n Gtk2::Ex::DBI option 'readonly' renamed to 'read_only' ...\n";
-        warn " ... Sorry about that ... done for consistancy.\n\n";
-        $self->{read_only} = $$req{readonly};
+    if ( exists $self->{readonly} ) {
+        carp( "\n\n Gtk2::Ex::DBI option 'readonly' renamed to 'read_only' ...\n"
+            . "... Sorry about that ... done for consistancy.\n\n" );
+        $self->{read_only} = $self->{readonly};
     }
     
-    if ( $self->{data_lock_field} && ! $self->{form}->get_widget($self->{data_lock_field}) ) {
-        warn "\n\n Gtk2::Ex::DBI created with a data_lock_field,\n"
+    bless $self, $class;
+    
+    if ( $self->{data_lock_field} && ! $self->get_widget($self->{data_lock_field}) ) {
+        carp( "\n\n Gtk2::Ex::DBI created with a data_lock_field,\n"
             . " but couldn't find a matching widget!\n"
             . " You *need* a matching widget.\n"
             . " Make it invisible if you don't want to see it.\n"
             . " Patches to remove this requirement gladly accepted :)\n"
-            . " * * * DATA DRIVEN LOCKING DISABLED * * *\n\n";
+            . " * * * DATA DRIVEN LOCKING DISABLED * * *\n\n" );
         delete $self->{data_lock_field};
     }
-    
-    bless $self, $class;
     
     # Set up combo box models
     foreach my $combo ( keys %{$self->{combos}} ) {
         $self->setup_combo( $combo );
     }
     
+    # ... and autocompletions
+    foreach my $autocompletion ( keys %{$self->{autocompletions}} ) {
+        $self->setup_autocompletion( $autocompletion );
+    }
+    
     # Reconstruct sql object if needed
-    if ( $$req{sql_select} || $$req{table} || $$req{sql_where} || $$req{sql_order_by} ) {
+    if ( $self->{sql_select} || $self->{table} || $self->{sql_where} || $self->{sql_order_by} ) {
         
         # Strip out SQL directives
-        if ( $$req{sql_select} ) {
-            $$req{sql_select}   =~ s/^select //i;
+        if ( $self->{sql_select} ) {
+            $self->{sql_select}   =~ s/^select //i;
         }
-        if ( $$req{sql_table} ) {
-            $$req{sql_table}    =~ s/^from //i;
+        if ( $self->{sql_table} ) {
+            $self->{sql_table}    =~ s/^from //i;
         }
-        if ( $$req{sql_where} ) {
-            $$req{sql_where}    =~ s/^where //i;
+        if ( $self->{sql_where} ) {
+            $self->{sql_where}    =~ s/^where //i;
         }
-        if ( $$req{sql_order_by} ) {
-            $$req{sql_order_by} =~ s/^order by //i;
+        if ( $self->{sql_order_by} ) {
+            $self->{sql_order_by} =~ s/^order by //i;
         }
         
         # Assemble things
         my $sql = {
-            select      => $$req{sql_select},
-            from        => $$req{table},
-            where       => $$req{sql_where},
-            order_by    => $$req{sql_order_by}
+            select      => $self->{sql_select},
+            from        => $self->{table},
+            where       => $self->{sql_where},
+            order_by    => $self->{sql_order_by}
         };
         
         $self->{sql} = $sql;
@@ -163,30 +225,51 @@ sub new {
         $self->{friendly_table_name} = $self->{sql}->{from};
     }
     
-    # Primary Key
-    if ( $$req{primarykey} ) {
-        $self->{primary_key} = $$req{primarykey};
-        $legacy_warnings .= " - primarykey renamed to primary_key\n";
+    # Primary Key - oldest
+    if ( ref $req eq 'HASH' ) {
+        if ( exists $$req{primarykey} ) {
+            push @{$self->{primary_keys}}, $$req{primarykey};
+            $legacy_warnings .= " - primarykey pushed onto primary_keys array\n";
+        }
+        
+        # Primary Key - 2nd oldest
+        if ( exists $$req{primary_key} ) {
+            push @{$self->{primary_keys}}, $$req{primary_key};
+            $legacy_warnings .= " - primary_key pushed onto primary_keys array\n";
+        }
+        
     }
     
     if ( $legacy_warnings || $self->{legacy_mode} ) {
-        print "\n\n **** Gtk2::Ex::DBI starting in legacy mode ***\n";
-        print "While quite some effort has gone into supporting this, it would be wise to take action now.\n";
-        print "Warnings triggered by your request:\n$legacy_warnings\n";
+        carp ( "**** Gtk2::Ex::DBI starting in legacy mode ***\n"
+            .  "While quite some effort has gone into supporting this, it would be wise to take action now.\n"
+            .  "Warnings triggered by your request:\n$legacy_warnings\n" );
     }
+    
+    # NOTE The code below that constructs the widgets hash has been copied into axis::form_editor
+    # Please make sure any changes here also get reflected there
+    
+    # TODO Should we move this code to a central location instead of having 2 copies?
     
     $self->{server} = $self->{dbh}->get_info( 17 );
     
     # Some PostGreSQL stuff - DLB
     if ( $self->{server} =~ /postgres/i ) {
-        
         if ( ! $self->{search_path} ) {
-            $self->{search_path} = $self->{schema} . ",public";
+            if ( $self->{schema} ) {
+                $self->{search_path} = $self->{schema} . ",public";
+            } else {
+                $self->{search_path} = "public";
+            }
         }
-        
-        my $sth = $self->{dbh}->prepare ("SET search_path to " . $self->{search_path});
-        $sth->execute or die $self->{dbh}->errstr;
-        
+        my $sth = $self->{dbh}->prepare ( "SET search_path to " . $self->{search_path} );
+        eval {
+            $sth->execute or die $self->{dbh}->errstr;
+        };
+        if ( $@ ) {
+            carp( "Failed to set search_path to " . $self->{search_path}
+                . " for a Postgres database. I'm not sure what the implications of this are. Postgres users, please report ...\n" );
+        }
     }
     
     if ( $self->{widgets} && ! $self->{sql}->{select} && ! $self->{sql}->{pass_through} ) {
@@ -212,6 +295,8 @@ sub new {
         
         # Construct a widgets hash from the select string
         
+        # TODO: Breaks with new-line characters OR ( excess )leading spaces
+        
         foreach my $fieldname ( split( / *, */, $self->{sql}->{select} ) ) {
             if ( $fieldname =~ m/ as /i ) {
                 my ( $sql_fieldname, $alias ) = split( / as /i, $fieldname );
@@ -233,33 +318,33 @@ sub new {
         eval {
             if ( exists $self->{sql}->{pass_through} ) {
                 $sth = $self->{dbh}->prepare( $self->{sql}->{pass_through} )
-                    || die $self->{dbh}->errstr;
+                    || croak( $self->{dbh}->errstr );
             } else {
                 $sth = $self->{dbh}->prepare(
                     "select " . $self->{sql}->{select} . " from " . $self->{sql}->{from} . " where 0=1")
-                        || die $self->{dbh}->errstr;
+                        || croak( $self->{dbh}->errstr );
             }
         };
         
         if ( $@ ) {
             Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
-                                                        title   => "Error in Query!",
-                                                        icon    => "error",
-                                                        text    => "<b>Database Server Says:</b>\n\n$@"
-                                                    );
+                title   => "Error in Query!",
+                icon    => "error",
+                text    => "<b>Database Server Says:</b>\n\n$@"
+            );
             return FALSE;
         }
         
         eval {
-            $sth->execute || die $self->{dbh}->errstr;
+            $sth->execute || croak( $self->{dbh}->errstr );
         };
         
         if ( $@ ) {
             Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
-                                                        title   => "Error in Query!",
-                                                        icon    => "error",
-                                                        text    => "<b>Database Server Says:</b>\n\n$@"
-                                                    );
+                title   => "Error in Query!",
+                icon    => "error",
+                text    => "<b>Database Server Says:</b>\n\n$@"
+            );
             return FALSE;
         }
         
@@ -280,6 +365,35 @@ sub new {
     
     my $sth;
     
+    # Set the auto_incrementing flag if this value is not already defined.
+    if ( ! exists $self->{auto_incrementing} ) {
+        $self->{auto_incrementing} = 1;
+    }
+    
+    # Fetch primary key(s), but only if we haven't been passed one in the constructor
+    if ( ! $self->{primary_keys} ) {
+        eval {
+            $sth = $self->{dbh}->primary_key_info( undef, undef, $self->{sql}->{from} )
+                || die $self->{dbh}->errstr;
+        };
+        if ( ! $@ ) {
+            while ( my $row = $sth->fetchrow_hashref ) {
+                if ( $self->{debug} ) {
+                    print "Gtk2::Ex::DBI bound to $self->{friendly_table_name} detected primary key item: $row->{COLUMN_NAME}\n";
+                }
+                push @{$self->{primary_keys}}, $row->{COLUMN_NAME};
+                if ( exists $row->{KEY_SEQ} ) {
+                    if ( ! $row->{KEY_SEQ} ) {
+                        if ( $self->{debug} ) {
+                            print "This primary key is NOT auto-incrementing. I hope you know what you're doing ...\n";
+                        }
+                        $self->{auto_incrementing} = 0;
+                    }
+                }
+            }
+        }
+    }
+    
     # Fetch column_info for current table
     eval {
         if ( $self->{sql}->{pass_through} ) {
@@ -291,10 +405,10 @@ sub new {
         }
     };
     
-    if ( $@ ) {
+    if ( $@ && ! $self->{primary_keys} ) {
         
-        # SQLite doesn't support column_info, but it does support primary_key_info
-        # This might be the case for other Database Servers, so we'll try primary_key_info and
+        # Old versions of SQLite don't support column_info, but do support primary_key_info
+        # This might be the case for other database servers, so we'll try primary_key_info and
         # see what happens ...
         
         eval {
@@ -303,43 +417,28 @@ sub new {
         };
         
         if ( ! $@ ) {
-            
             # It works!
-            my $primary_key_info = $sth->fetchrow_hashref;
-            $self->{primary_key} = $primary_key_info->{COLUMN_NAME};
-            
+            while ( my $row = $sth->fetchrow_hashref ) {
+                print "Gtk2::Ex::DBI bound to $self->{friendly_table_name} detected primary key item: $row->{COLUMN_NAME}\n";
+                push @{$self->{primary_keys}}, $row->{COLUMN_NAME};
+            }
         }
         
-        if ( ! $self->{primary_key} ) {
-            
+        if ( ! $self->{primary_keys} ) {
             # That's it. I give up. No read-write access for you!
             if ( ! $self->{quiet} ) {
-                warn "All known methods of fetching the primary key from " . $self->{server} . " failed :("
+                carp( "\nAll known methods of fetching the primary key from " . $self->{server} . " failed :("
                     . " ... If column_info fails ( eg multi-table queries ), then you MUST ...\n"
-                    . " ... provide a primary_key in the constructor ...\n"
+                    . " ... provide a primary_keys array in the constructor ...\n"
                     . " ... if you want to be able to update the recordset ...\n"
-                    . " ... Defaulting to READ-ONLY mode ...\n\n";
+                    . " ... Defaulting to READ-ONLY mode ...\n" );
             }
-            
             $self->{read_only} = TRUE;
-            
         }
         
     } else {
         
         while ( my $column_info_row = $sth->fetchrow_hashref ) {
-            # Set the primary key if we find one or if one is specified
-            # Current detection works for MySQL, Postgres & SQL Server only at present
-            # *** TODO *** Add support for more database servers here!
-            if (
-                ( $self->{primary_key} && $self->{primary_key} eq $column_info_row->{COLUMN_NAME} )
-                    || ( exists $column_info_row->{mysql_is_pri_key} && $column_info_row->{mysql_is_pri_key} )                                      # MySQL
-                    || ( exists $column_info_row->{TYPE_NAME} && $column_info_row->{TYPE_NAME} && $column_info_row->{TYPE_NAME} =~ m/ identity/ )   # SQL Server, maybe others ( Sybase ? )
-                    || ( exists $column_info_row->{COLUMN_DEF} && $column_info_row->{COLUMN_DEF} && $column_info_row->{COLUMN_DEF} =~ m/nextval/ )  # Postgres
-               )
-            {
-                $self->{primary_key} = $column_info_row->{COLUMN_NAME};
-            }
             # Loop through the list of columns from the database, and
             # add only columns that we're actually dealing with
             for my $fieldname ( keys %{$self->{sql_to_widget_map}} ) {
@@ -355,17 +454,28 @@ sub new {
     
     # Make sure we've got the primary key in the widgets hash and the sql_to_widget_map hash
     # It will NOT be here unless it's been specified in the SQL select string or the widgets hash already
-    # Note that we test teh sql_to_widget_map, and NOT the widgets hash, as we don't know what
+    # Note that we test the sql_to_widget_map, and NOT the widgets hash, as we don't know what
     # the widget might be called, but we DO know what the name of the key in the sql_to_widget_map
     # should be
-    if ( ! exists $self->{sql_to_widget_map}->{ $self->{primary_key} } ) {
-        $self->{widgets}->{ $self->{primary_key} } = {};
-        $self->{sql_to_widget_map}->{ $self->{primary_key} } = $self->{primary_key};
+    foreach my $primary_key ( @{$self->{primary_keys}} ) {
+        if ( ! exists $self->{sql_to_widget_map}->{ $primary_key } ) {
+            $self->{widgets}->{ $primary_key } = {};
+            $self->{sql_to_widget_map}->{ $primary_key } = $primary_key;
+        }
+        if ( $self->{dont_update_keys} ) {
+            $self->{widgets}->{ $primary_key }->{dont_update} = 1;
+        }
     }
     
-    $sth->finish;
+    # If things failed above, we mightn't have a $sth to finish, so
+    # check we do first ...
+    if ( $sth ) {
+        $sth->finish;
+    }
     
-    $self->query;
+    if ( ! $self->{skip_query} ) {
+        $self->query;
+    }
     
     # We connect a few little goodies to various widgets ...
     
@@ -391,58 +501,11 @@ sub new {
     # and cleanly destroy ourselves when requested
     
     # We also set up input / output formatters based on widget ( ie $self->{widgets} )
-    
-    # *** TODO ***
-    # This is the old format, which is messy. Remove when new format is done
-    # *** TODO ***
-    
-#    foreach my $fieldname ( keys %{$self->{widgets}} ) {
-#        
-#        # Set up input / output formatters
-#        if ( $self->{widgets}->{ $fieldname }->{type} ) {
-#            
-#            if ( $self->{widgets}->{ $fieldname }->{type} eq "currency" ) {
-#                
-#                push @{$self->{widgets}->{ $fieldname }->{input_formatters}}, "number";
-#                push @{$self->{widgets}->{ $fieldname }->{output_formatters}}, "number";
-#                
-#                # Set defaults for currency formatting if not already set
-#                if ( ! exists $self->{widgets}->{ $fieldname }->{decimals} ) {
-#                    $self->{widgets}->{ $fieldname }->{decimals} = 2;
-#                }
-#                
-#                if ( ! exists $self->{widgets}->{ $fieldname }->{decimal_fill} ) {
-#                    $self->{widgets}->{ $fieldname }->{decimal_fill} = TRUE;
-#                }
-#                
-#                if ( ! exists $self->{widgets}->{ $fieldname }->{separate_thousands} ) {
-#                    $self->{widgets}->{ $fieldname }->{separate_thousands} = TRUE;
-#                }
-#                
-#            } elsif ( $self->{widgets}->{ $fieldname }->{type} eq "number" ) {
-#                
-#                push @{$self->{widgets}->{ $fieldname }->{input_formatters}}, "number";
-#                push @{$self->{widgets}->{ $fieldname }->{output_formatters}}, "number";
-#                
-#            } elsif ( $self->{widgets}->{ $fieldname }->{type} eq "date" ) {
-#                
-#                if ( exists $self->{widgets}->{ $fieldname }->{date_only} && $self->{widgets}->{ $fieldname }->{date_only} ) {
-#                    push @{$self->{widgets}->{ $fieldname }->{input_formatters}}, "date_only";
-#                }
-#                
-#                if ( $self->{widgets}->{ $fieldname }->{format} eq "dd-mm-yyyy" ) {
-#                    push @{$self->{widgets}->{ $fieldname }->{input_formatters}}, "date_dd-mm-yyyy";
-#                    push @{$self->{widgets}->{ $fieldname }->{output_formatters}}, "date_dd-mm-yyyy";
-#                }
-#                
-#            }
-#            
-#        }
         
 	# Set up some defaults for different widget types
     foreach my $fieldname ( keys %{$self->{widgets}} ) {
     
-    	#Get hold of the widget def ...
+    	# Get hold of the widget def ...
         my $widget_def = $self->{widgets}->{$fieldname};
         
         if ( exists $widget_def->{number} ) {
@@ -471,7 +534,7 @@ sub new {
         }
         
         my @widgets;
-        my $this_widget = $self->{form}->get_widget( $fieldname );
+        my $this_widget = $self->get_widget( $fieldname );
         
         if ( $this_widget ) {
             
@@ -479,13 +542,10 @@ sub new {
             
         } else {
         	
-        	# *** TODO ***
-        	# Remove this!
-        	# *** TODO ***
-        	
+        	# TODO Remove dodgy split-widget support and replace with custom widgets
             # Check for split-widget widgets ... at present, TimeSpinners
             foreach my $type qw / hh mm ss / {
-                $this_widget = $self->{form}->get_widget( $fieldname . "_" . $type );
+                $this_widget = $self->get_widget( $fieldname . "_" . $type );
                 if ( $this_widget ) {
                     push @widgets, $this_widget;
                 }
@@ -543,10 +603,6 @@ sub new {
                     $signal
                 ];
                 
-                # Also do the key-press-event ( for Enter keys )
-#                $signal = $child_widget->signal_connect(
-#                    'key-press-event' =>    sub { $self->process_entry_keypress(@_) } );
-                
                 # Trigger 2 tab-forward events;
                 #  1 to get to the combo part ( ie the child's parent widget )
                 #  and 1 to get to the next widget
@@ -596,8 +652,6 @@ sub new {
                     changed =>              sub { $self->changed( $fieldname ) } );
                 push @signals, $widget->signal_connect_after(
                     'populate-popup' =>     sub { $self->build_right_click_menu(@_) } );
-#                push @signals, $widget->signal_connect(
-#                    'key-press-event' =>    sub { $self->process_entry_keypress(@_) } );
                 push @signals, $widget->signal_connect(
                     'activate' => sub { $self->{window}->child_focus('tab-forward') } );
                 
@@ -634,18 +688,18 @@ sub new {
         }
     }
     
-    $self->{spinner} = $self->{form}->get_widget( $self->{record_spinner} );
+    $self->{spinner} = $self->get_widget( $self->{record_spinner} );
     
     if ( $self->{spinner} ) {
         
         $self->{record_spinner_value_changed_signal}
             = $self->{spinner}->signal_connect_after( value_changed => sub {
-                $self->{spinner}->signal_handler_block($self->{record_spinner_value_changed_signal});
-                $self->move( undef, $self->{spinner}->get_text - 1 );
-                $self->{spinner}->signal_handler_unblock($self->{record_spinner_value_changed_signal});
-                return TRUE;
-            }
-                                                    );
+                        $self->{spinner}->signal_handler_block( $self->{record_spinner_value_changed_signal} );
+                        $self->move( undef, $self->{spinner}->get_text - 1 );
+                        $self->{spinner}->signal_handler_unblock( $self->{record_spinner_value_changed_signal} );
+                        return TRUE;
+                    }
+              );
         
         push @{$self->{objects_and_signals}},
         [
@@ -661,12 +715,16 @@ sub new {
         $self->{window},
         $self->{window}->signal_connect( delete_event   => sub {
             if ( $self->{changed} ) {
-                my $answer = Gtk2::Ex::Dialogs::Question->new_and_run(
-                    title   => "Apply changes to " . $self->{friendly_table_name} . " before closing?",
-                    text    => "There are changes to the current record ( "
-                                . $self->{friendly_table_name} . " )\nthat haven't yet been applied.\n"
-                                . "Would you like to apply them before closing the form?"
-                                                                 );
+                my $answer = TRUE;
+                if ( ! $self->{auto_apply} ) {
+                    my $answer = Gtk2::Ex::Dialogs::Question->new_and_run(
+                        title   => "Apply changes to " . $self->{friendly_table_name} . " before closing?",
+                        icon    => "question",
+                        text    => $self->{custom_changed_text} ? $self->{custom_changed_text} : 
+                                            "There are changes to the current record ( " . $self->{friendly_table_name} . " )\n"
+                                             . "that haven't yet been applied. Would you like to apply them before closing the form?"
+                    );
+                }
                 # We return FALSE to allow the default signal handler to
                 # continue with destroying the window - all we wanted to do was check
                 # whether to apply records or not
@@ -750,15 +808,19 @@ sub query {
     #  - bind_values
     
     # Update database from current hash if necessary
-    if ( $self->{changed} == TRUE ) {
+    if ( $self->{changed} ) {
         
-        my $answer = ask Gtk2::Ex::Dialogs::Question(
-            title   => "Apply changes to " . $self->{friendly_table_name} . " before querying?",
-            icon    => "question",
-            text    => "There are outstanding changes to the current record ( "
-                        . $self->{friendly_table_name} . " )."
-                        . " Do you want to apply them before running a new query?"
-        );
+        my $answer = TRUE;
+        
+        if ( ! $self->{auto_apply} ) {
+            $answer = Gtk2::Ex::Dialogs::Question->ask(
+                title   => "Apply changes to " . $self->{friendly_table_name} . " before querying?",
+                icon    => "question",
+                text    => "There are outstanding changes to the current record ( "
+                            . $self->{friendly_table_name} . " )."
+                            . " Do you want to apply them before running a new query?"
+            );
+        }
         
         if ( $answer ) {
             if ( ! $self->apply ) {
@@ -768,18 +830,29 @@ sub query {
         
     }
     
+    # Execute any before_query code
+    if ( $self->{before_query} ) {
+        if ( ! $self->{before_query}( $where_object ) ) {
+            return FALSE;
+        }
+    }
+    
     # If we're using a stored procedure, we don't keep a keyset - there's not much point.
     # We simply pull all records at once ... which we do now.
     # We can't wait for move() to call fetch_new_slice() because move() wants to know
     # how many records there are ( which usually comes from the keyset, which we're not fetching
     # here ). So anyway, we need to do the query here.
     
+    my ( $query_start_time, $query_end_time );
+    
+    $query_start_time = Time::HiRes::gettimeofday;
+    
     if ( exists $self->{sql}->{pass_through} ) {
         
         eval {
             $self->{records} = $self->{dbh}->selectall_arrayref (
                     $self->{sql}->{pass_through},   {Slice=>{}}
-            ) || die "Error in SQL:\n\n" . $self->{sql}->{pass_through};
+            ) || croak( "Error in SQL:\n\n" . $self->{sql}->{pass_through} );
         };
         
         if ( $@ ) {
@@ -822,7 +895,8 @@ sub query {
         # Get an array of primary keys
         my $sth;
         
-        my $local_sql = "select " . $self->{primary_key} . " from " . $self->{sql}->{from};
+        my $local_sql = "select " . join( ", ", @{$self->{primary_keys}} )
+            . " from " . $self->{sql}->{from};
         
         # Add where clause if defined
         if ( $self->{sql}->{where} ) {
@@ -836,7 +910,7 @@ sub query {
         
         eval {
             $sth = $self->{dbh}->prepare( $local_sql )
-                || die $self->{dbh}->errstr;
+                || croak( $self->{dbh}->errstr );
         };
         
         if ( $@ ) {
@@ -846,42 +920,53 @@ sub query {
                 text    => "<b>Database Server Says:</b>\n\n$@"
             );
             if ( $self->{debug} ) {
-                warn "Gtk2::Ex::DBI::query died with the SQL:\n\n$local_sql\n";
+                croak( "Gtk2::Ex::DBI::query died with the SQL:\n\n$local_sql\n" );
             }
             return FALSE;
         }
         
         eval {
             if ( $self->{sql}->{bind_values} ) {
-                $sth->execute( @{$self->{sql}->{bind_values}} ) || die $self->{dbh}->errstr;
+                $sth->execute( @{$self->{sql}->{bind_values}} ) || croak( $self->{dbh}->errstr );
             } else {
-                $sth->execute || die $self->{dbh}->errstr;
+                $sth->execute || croak( $self->{dbh}->errstr );
             }
         };
         
         if ( $@ ) {
             Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
-                                                        title   => "Error in Query!",
-                                                        icon    => "error",
-                                                        text    => "<b>Database Server Says:</b>\n\n$@"
+                title   => "Error in Query!",
+                icon    => "error",
+                text    => "<b>Database Server Says:</b>\n\n$@"
             );
             if ( $self->{debug} ) {
-                warn "Gtk2::Ex::DBI::query died with the SQL:\n\n$local_sql\n";
+                $sth->finish;
+                croak( "Gtk2::Ex::DBI::query died with the SQL:\n\n$local_sql\n" );
+            } else {
+                return FALSE;
             }
-            $sth->finish;
-            return FALSE;
         }
         
         $self->{keyset} = ();
         $self->{records} = ();
         
         while ( my @row = $sth->fetchrow_array ) {
-            push @{$self->{keyset}}, $row[0];
+            my $key_no = 0;
+            my @keys;
+            foreach my $primary_key ( @{$self->{primary_keys}} ) {
+                push @keys, $row[$key_no];
+                $key_no ++;
+            }
+            push @{$self->{keyset}}, @keys;   
         }
         
         $sth->finish;
         
     }
+    
+    $query_end_time = Time::HiRes::gettimeofday;
+    
+    $self->{query_execution_time} = $query_end_time - $query_start_time;
     
     $self->move( 0, 0 );
     
@@ -894,9 +979,6 @@ sub query {
 sub insert {
     
     # Inserts a record at the end of the *in-memory* recordset.
-    # I'm using an exclamation mark ( ! ) to indicate that the record isn't yet in the Database Server.
-    # When the 'apply' method is called, if a '!' is in the primary key's place,
-    # an *insert* is triggered instead of an *update*.
     
     my $self = shift;
     my $newposition = $self->count; # No need to add one, as the array starts at zero.
@@ -947,8 +1029,8 @@ sub assemble_new_record {
         $new_record->{$fieldname} = $self->{defaults}->{$fieldname};
     }
     
-    # Finally, set the insertion marker ( but don't set the changed flag until the user actually changes something )
-    $new_record->{ $self->{sql_to_widget_map}->{$self->{primary_key}} } = "!";
+    # Finally, set the 'inserting' flag ( but don't set the changed flag until the user actually changes something )
+    $self->{inserting} = 1;
     
     return $new_record;
     
@@ -980,6 +1062,8 @@ sub count {
 sub paint {
     
     my $self = shift;
+    
+    #carp( $self->{friendly_table_name} . " painting ..." );
     
     # Set the changelock so we don't trigger more changes
     $self->{changelock} = TRUE;
@@ -1016,16 +1100,29 @@ sub move {
     my ( $self, $offset, $absolute ) = @_;
     
     # Update database from current hash if necessary
-    if ( $self->{changed} == TRUE ) {
-        my $result = $self->apply;
-        if ( $result == FALSE ) {
-            # Update failed. If RecordSpinner exists, set it to the current position PLUS ONE.
-            if ( $self->{spinner} ) {
-                $self->{spinner}->signal_handler_block( $self->{record_spinner_value_changed_signal});
-                $self->{spinner}->set_text( $self->position + 1 );
-                $self->{spinner}->signal_handler_block( $self->{record_spinner_value_changed_signal});
+    if ( $self->{changed} ) {
+        my $answer = TRUE;
+        if ( ! $self->{auto_apply} ) {
+            $answer = Gtk2::Ex::Dialogs::Question->ask(
+                title   => "Apply changes to " . $self->{friendly_table_name} . " before moving?",
+                icon    => "question",
+                text    => "There are outstanding changes to the current record ( "
+                            . $self->{friendly_table_name} . " )."
+                            . " Do you want to apply them before moving to a different record?"
+            );
+        }
+        if ( $answer ) {
+            if ( ! $self->apply ) {
+                # Update failed. If RecordSpinner exists, set it to the current position PLUS ONE.
+                if ( $self->{spinner} ) {
+                    $self->{spinner}->signal_handler_block( $self->{record_spinner_value_changed_signal});
+                    $self->{spinner}->set_value( $self->position + 1 );
+                    $self->{spinner}->signal_handler_block( $self->{record_spinner_value_changed_signal});
+                }
+                return FALSE;
             }
-            return FALSE;
+        } else {
+            $self->{changed} = FALSE;
         }
     }
     
@@ -1088,7 +1185,7 @@ sub move {
     # Set the RecordSpinner
     if ( $self->{spinner} ) {
         $self->{spinner}->signal_handler_block( $self->{record_spinner_value_changed_signal} );
-        $self->{spinner}->set_text( $self->position + 1 );
+        $self->{spinner}->set_value( $self->position + 1 );
         $self->{spinner}->signal_handler_unblock( $self->{record_spinner_value_changed_signal} );
     }
     
@@ -1134,29 +1231,45 @@ sub fetch_new_slice {
         
     } else {
         
+        # Reset 'inserting' flag
+        $self->{inserting} = 0;
+        
         if ( $upper > $keyset_count - 1 ) {
         	$upper = $keyset_count - 1;
         }
         
         my $key_list;
         
-        for ( my $counter = $lower; $counter < $upper+1; $counter++ ) {
-            $key_list .= " " . $self->{keyset}[$counter] . ",";
-        }
-        
-        # Chop off trailing comma
-        chop($key_list);
-        
         # Assemble query
         my $local_sql = "select " . $self->{sql}->{select};
         
-        # Check we have a primary key ( or a wildcard ) in sql_select; append primary key if we don't - we need it
-        if ( $self->{sql}->{select} !~ /$self->{primary_key}/ && $self->{sql}->{select} !~ /[\*|%]/ ) {
-            $local_sql .= ", " . $self->{primary_key};
+        # Do we have an SQL wildcard ( * or % ) in the select string?
+        if (  $self->{sql}->{select} !~ /[\*|%]/ ){
+            # No? In that case, check we have the primary keys; append them if we don't - we need them
+            $local_sql .= ", " . join( ', ', @{$self->{primary_keys}} );
         }
         
         $local_sql .= " from " . $self->{sql}->{from}
-            . " where " . $self->{primary_key} . " in ($key_list )";
+            . " where ( " . join( ', ', @{$self->{primary_keys}} ) . " ) in ( ";
+        
+        # The where clause we're trying to build should look like:
+        #
+        # where ( key_1, key_2, key_3 ) in
+        # (
+        #    ( 1, 5, 8 ),
+        #    ( 2, 4, 9 )
+        # )
+        # ... etc ... assuming we have a primary key spanning 3 columns
+        
+        for ( my $counter = $lower; $counter < $upper+1; $counter++ ) {
+            $local_sql .= " ( " . join( ",", $self->{keyset}[$counter] ) . " ),";
+            #$key_list .= " " . $self->{keyset}[$counter] . ",";
+        }
+        
+        # Chop off trailing comma
+        chop( $local_sql );
+        
+        $local_sql .= " )";
         
         if ( $self->{sql}->{order_by} ) {
             $local_sql .= " order by " . $self->{sql}->{order_by};
@@ -1165,7 +1278,7 @@ sub fetch_new_slice {
         eval {
             $self->{records} = $self->{dbh}->selectall_arrayref (
                 $local_sql, {Slice=>{}}
-            ) || die $self->{dbh}->errstr . "\n\nLocal SQL was:\n$local_sql";
+            ) || croak( $self->{dbh}->errstr . "\n\nLocal SQL was:\n$local_sql" );
         };
         
         if ( $@ ) {
@@ -1190,7 +1303,7 @@ sub apply {
     
     my $self = shift;
     
-    if ( $self->{read_only} == TRUE ) {
+    if ( $self->{read_only} ) {
         Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
             title   => "Read Only!",
             icon    => "authentication",
@@ -1219,54 +1332,60 @@ sub apply {
     my @fieldlist = ();
     my @bind_values = ();
     
-    my $inserting = FALSE; # Flag that tells us whether we're inserting or updating
     my $placeholders;  # We need to append to the placeholders while we're looping through fields, so we know how many fields we actually have
-    
-    if ( $self->{records}[$self->{slice_position}]->{ $self->{sql_to_widget_map}->{$self->{primary_key}} } eq "!" ) {
-        $inserting = TRUE;
-    }
     
     foreach my $fieldname ( keys %{$self->{widgets}} ) {
         
+        my $widget_definition = $self->{widgets}->{$fieldname};
+        
         if ( $self->{debug} ) {
-            print "Processing field $fieldname ...\n";
+            print "Processing field $fieldname ...\n"
+                . Dumper( $widget_definition ) . "\n";
         }
         
-        # Don't include the field if it's a primary key.
-        # This goes for inserts and updates. We only support auto_increment primary
-        # keys anyway, so people shouldn't be updating them ...
+        # Support for aliases
+        my $sql_fieldname = $widget_definition->{sql_fieldname} || $fieldname;
         
-        if ( $fieldname eq $self->{primary_key} ) {
+        if ( $self->{inserting} && $widget_definition->{dont_insert} ) {
+            
+            # ie if we're inserting and the current widget definition says we
+            # shouldn't insert values into this field
             next;
+            
+        } elsif ( ! $self->{inserting} && $widget_definition->{dont_update} ) {
+            
+            # ie if we're updating and the current widget definition says we
+            # shouldn't update values in this field
+            next;
+            
         }
         
-        # *** TODO ***
-        # Better multi-widget widget support
-        my $widget = $self->{form}->get_widget( $fieldname ) || $self->{form}->get_widget( $fieldname . "_" . "hh" );
-        
-        if ( defined $widget ) {
-            
-            # Support for aliases
-            my $sql_fieldname = $self->{widgets}->{$fieldname}->{sql_fieldname} || $fieldname;
-            
+#        # TODO Remove dodged-up multi-widget support
+#        my $widget = $self->get_widget( $fieldname ) || $self->get_widget( $fieldname . "_" . "hh" );
+#        
+#        # TODO Document read-only labels
+#        if ( defined $widget && ref $widget ne "Gtk2::Label" ) { # Labels are read-only
             push @fieldlist, $sql_fieldname;
             push @bind_values, $self->get_widget_value( $fieldname );
-            
-        }
+#        }
         
     }
     
     my $update_sql;
     
-    if ( $inserting ) {
+    if ( $self->{inserting} ) {
         
         $update_sql = "insert into " . $self->{sql}->{from} . " ( " . join( ",", @fieldlist, ) . " )"
             . " values ( " . "?," x ( @fieldlist - 1 ) . "? )";
         
     } else {
         
-        $update_sql = "update " . $self->{sql}->{from} . " set " . join( "=?, ", @fieldlist ) . "=? where " .$self->{primary_key} . "=?";
-        push @bind_values, $self->{records}[$self->{slice_position}]->{ $self->{sql_to_widget_map}->{$self->{primary_key}} };
+        $update_sql = "update " . $self->{sql}->{from} . " set " . join( "=?, ", @fieldlist ) . "=? where "
+            . join( "=? and", @{$self->{primary_keys}} ) . "=?";
+        
+        foreach my $primary_key ( @{$self->{primary_keys}} ) {
+            push @bind_values, $self->{records}[$self->{slice_position}]->{ $self->{sql_to_widget_map}->{$primary_key} };
+        }
         
     }
     
@@ -1276,6 +1395,7 @@ sub apply {
         my $counter = 0;
         
         for my $value ( @bind_values ) {
+            no warnings 'uninitialized';
             print " " x ( 20 - length( $fieldlist[$counter] ) ) . $fieldlist[$counter] . ": $value\n";
             $counter ++;
         }
@@ -1289,64 +1409,90 @@ sub apply {
             || die $self->{dbh}->errstr;
     };
     
-    # If the above failed, there will be something in the special variable $@
     if ( $@ ) {
-        # Dialog explaining error...
-        new_and_run Gtk2::Ex::Dialogs::ErrorMsg(
-                                                    title   => "Error preparing statement to update recordset!",
-                                                    icon    => "error",
-                                                    text    => "<b>Database server says:</b>\n\n$@"
+        Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
+            title   => "Error preparing statement to update recordset!",
+            icon    => "error",
+            text    => "<b>Database server says:</b>\n\n$@"
         );
-        warn "Error preparing statement to update recordset:\n\n$update_sql\n\n@bind_values\n" . $@ . "\n\n";
-        return FALSE;
+        carp( "Error preparing statement to update recordset:\n\n$update_sql\n\n@bind_values\n" . $@ );
     }
     
     # Evaluate the results of the update.
+    my $affected_rows;
     eval {
-        $sth->execute (@bind_values) || die $self->{dbh}->errstr;
+        $affected_rows = $sth->execute( @bind_values ) || die $self->{dbh}->errstr;
     };
     
-    $sth->finish;
-    
-    # If the above failed, there will be something in the special variable $@
-    if ( $@ ) {
-        # Dialog explaining error...
-        new_and_run Gtk2::Ex::Dialogs::ErrorMsg(
-                                                    title   => "Error updating recordset!",
-                                                    icon    => "error",
-                                                    text    => "<b>Database server says:</b>\n\n" . $@
-                                               );
-        warn "Error updating recordset:\n\n$update_sql\n\n@bind_values\n" . $@ . "\n\n";
-        return FALSE;
+    if ( $self->{debug} ) {
+        no warnings 'uninitialized';
+        print "apply() affected [$affected_rows] rows";
     }
     
-    # If this was an INSERT, we need to fetch the primary key value and apply it to the local slice, and also append the primary key to the keyset
-    if ( $inserting ) {
+    if ( $@ ) {
+        Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
+            title   => "Error updating recordset!",
+            icon    => "error",
+            text    => "<b>Database server says:</b>\n\n" . $@
+        );
+        carp( "Error updating recordset:\n\n$update_sql\n\n@bind_values\n" . $@ . "\n" );
+    }
+    
+    eval {
+        $sth->finish;
+    };
+    
+    # If this was an INSERT, we need to fetch the primary key value and apply it to the local slice,
+    # and also append the primary key to the keyset
+    
+    if ( $self->{inserting} ) {
         
-        my $inserted_id = $self->last_insert_id;
-        
-        $self->{records}[$self->{slice_position}]->{ $self->{sql_to_widget_map}->{$self->{primary_key}} } = $inserted_id;
-        push @{$self->{keyset}}, $inserted_id;
-        
-        # Apply primary key to form ( if field exists )
-        my $widget = $self->{form}->get_widget( $self->{sql_to_widget_map}->{$self->{primary_key}} );
-        
-        if ( $widget ) {
-            $widget->set_text( $inserted_id ); # Assuming the widget has a set_text method of course ... can't see when this wouldn't be the case
+        if ( $self->{auto_incrementing} ) {
+            
+            # We only support a *single* primary key in the case of
+            # an auto-incrementing setup. There shouldn't really
+            # be any other options to cover ...
+            
+            my $new_key = $self->last_insert_id;
+            my $primary_key = $self->{primary_keys}[0];
+            
+            $self->{records}[$self->{slice_position}]->{ $self->{sql_to_widget_map}->{$primary_key} } = $new_key;
+            
+            # Apply primary key to form ( if field exists )
+            my $widget = $self->get_widget( $self->{sql_to_widget_map}->{$primary_key} );
+            if ( $widget ) {
+                $widget->set_text( $primary_key ); # Assuming the widget has a set_text method of course ... can't see when this wouldn't be the case
+            }
+            
         }
-        
-        $self->{changelock} = FALSE;
-        $self->set_record_spinner_range;
-        $self->{changelock} = FALSE;
         
     }
     
     # SQL update successfull. Now apply update to local array.
     foreach my $fieldname ( keys %{$self->{widgets}} ) {
-        my $widget = $self->{form}->get_widget( $fieldname );
+        my $widget = $self->get_widget( $fieldname );
         if ( defined $widget ) {
             $self->{records}[$self->{slice_position}]->{$fieldname} = $self->get_widget_value( $fieldname );
         }
+    }
+    
+    if ( $self->{inserting} ) {
+        
+        # Note: For non-auto-incrementing primary keys, this MUST happen after we've copied values
+        # from the GUI back to our in-memory slice ( ie immediately above )
+        
+        my @keys;
+        
+        foreach my $primary_key ( @{$self->{primary_keys}} ) {
+            push @keys, $self->{records}[$self->{slice_position}]->{ $self->{sql_to_widget_map}->{$primary_key} };
+        }
+        
+        push @{$self->{keyset}}, @keys;
+        
+        $self->{changelock} = FALSE;
+        $self->set_record_spinner_range;
+        $self->{changelock} = FALSE;
+        
     }
     
     $self->{changed} = FALSE;
@@ -1355,10 +1501,27 @@ sub apply {
     
     # Execute external an_apply code
     if ( $self->{on_apply} ) {
-        $self->{on_apply}();
+        
+        my $apply_info;
+        
+        foreach my $primary_key ( @{$self->{primary_keys}} ) {
+            $apply_info->{primary_key} = $primary_key; # Legacy support. Single primary-key setups. DON'T break existing sane setups.
+            $apply_info->{primary_keys}->{$primary_key} = $self->{records}[$self->{slice_position}]->{ $self->{sql_to_widget_map}->{$primary_key} };
+        }
+        
+        if ( $self->{inserting} ) {
+            $apply_info->{status} = "inserted";
+        } else {
+            $apply_info->{status} = "changed";
+        }
+        
+        $self->{on_apply}($apply_info);
+        
     }
     
     $self->record_status_label_set;
+    
+    $self->{inserting} = 0; # Reset this flag ( doesn't matter if we were inserting or not )
     
     return TRUE;
     
@@ -1371,27 +1534,73 @@ sub changed {
     my ( $self, $fieldname ) = @_;
     
     if ( ! $self->{changelock} ) {
+        
         if ( ! $self->{read_only} && ! $self->{data_lock} ) {
+            
             if ( $self->{debug} ) {
-                warn "Gtk2::Ex::DBI::changed triggered from fieldname $fieldname\n";
-            }
-            my $recordstatus = $self->{form}->get_widget( $self->{status_label} );
-            if ( $recordstatus ) {
-                $recordstatus->set_markup( '<b><span color="red">Changed</span></b>' );
+                warn "Gtk2::Ex::DBI::changed triggered in object [" . $self->{friendly_table_name} . "] by field [$fieldname]\n";
             }
             
-            if ( ! $self->{changed} && $self->{on_initial_changed} ) {
-                # Execute on_initial_changed code ( only for the *initial* change of recordset status )
-                $self->{on_initial_changed}();
+            my $recordstatus = $self->get_widget( $self->{status_label} );
+            
+            if ( $recordstatus ) {
+                $recordstatus->set_markup( "<b><span color='"
+                    . ( $Gtk2::Ex::DBI::highlight_colour ? $Gtk2::Ex::DBI::highlight_colour : "red" )
+                    . "'>Changed</span></b>" );
             }
+            
+            if ( ! $self->{changed} ) {
+                
+                # If our changed flag is not already set, this is the 1st edit for this record
+                # ( whether it's a new one or not )
+                
+                $self->{changed} = TRUE; # We need to set this now, otherwise recursion occurs
+                
+                # If we're inserting, scan for sequences
+                if ( $self->{inserting} ) {
+                    foreach my $widget_name ( keys %{$self->{widgets}} ) {
+                        my $widget = $self->{widgets}->{$widget_name};
+                        if ( exists $widget->{sequence_sql} ) {
+                            my $sequence_dbh = exists $widget->{sequence_dbh} ? $widget->{sequence_dbh} : $self->{dbh};
+                            my $sth;
+                            eval {
+                                $sth = $sequence_dbh->prepare( $widget->{sequence_sql} )
+                                    || die $sequence_dbh->errstr;
+                                $sth->execute()
+                                    || die $sequence_dbh->errstr;
+                            };
+                            if ( $@ ) {
+                                carp( "Failed to select the next sequence:\n$@" );
+                                return FALSE;
+                            }
+                            if ( my @row = $sth->fetchrow_array ) {
+                                $self->set_widget_value( $widget_name, $row[0] );
+                            }
+                        }
+                    }
+                }
+            
+                if ( $self->{on_initial_changed} ) {
+                    # Execute on_initial_changed code ( only for the *initial* change of recordset status )
+                    
+                    if ( ! $self->{on_initial_changed}() ) {
+                        $self->undo;
+                        return FALSE;
+                    }
+                }
+                
+            }
+            
             if ( $self->{on_changed} ) {
                 # ... and also any on_changed code, which gets executed for EVERY change in data
                 # ... ( ie not recordset status )
                 $self->{on_changed}();
             }
-            $self->{changed} = TRUE;
+            
         }
+        
         $self->paint_calculated;
+        
     }
     
     return FALSE; # Have to do this otherwise other signal handlers won't be fired
@@ -1407,13 +1616,17 @@ sub record_status_label_set {
     
     my $self = shift;
     
-    my $recordstatus = $self->{form}->get_widget($self->{status_label});
+    my $recordstatus = $self->get_widget( $self->{status_label} );
     
     if ( $recordstatus ) {
         if ( $self->{data_lock} ) {
-            $recordstatus->set_markup('<b><i><span color="red">Locked</span></i></b>');
+            $recordstatus->set_markup( "<b><i><span color='"
+                . ( $Gtk2::Ex::DBI::highlight_colour ? $Gtk2::Ex::DBI::highlight_colour : "red" )
+                . "'>Locked</span></i></b>" );
         } else {
-            $recordstatus->set_markup('<b><span color="blue">Synchronized</span></b>');
+            $recordstatus->set_markup( "<b><span color='"
+                . ( $Gtk2::Ex::DBI::highlight_ok_colour ? $Gtk2::Ex::DBI::highlight_ok_colour : "blue" )
+                . "'>Synchronized</span></b>" );
         }
     }
     
@@ -1426,7 +1639,7 @@ sub paint_calculated {
     my ( $self, $field_to_paint ) = @_;
     
     foreach my $fieldname ( $field_to_paint || keys %{$self->{calc_fields}} ) {
-        my $widget = $self->{form}->get_widget($fieldname);
+        my $widget = $self->get_widget($fieldname);
         my $calc_value = eval $self->{calc_fields}->{$fieldname};
         if ( ! defined $widget ) {
             if ( ! $self->{quiet} ) {
@@ -1451,13 +1664,13 @@ sub revert {
     
     my $self = shift;
     
-    if ( $self->{records}[$self->{slice_position}]->{ $self->{sql_to_widget_map}->{$self->{primary_key}} } eq "!" ) {
-        # This looks like a new record. Delete it and roll back one record
+    if ( $self->{inserting} ) {
+        # We're insering. Drop record and roll back one
         my $garbage_record = pop @{$self->{records}};
         $self->{changed} = FALSE;
+        $self->{inserting} = 0;
         # Force a new slice to be fetched when we move(), which in turn deals with possible problems
-        # if there are no records ( ie we want to put the insertion marker '!' back into the primary
-        # key if there are no records )
+        # if there are no records ( ie we want to set the 'inserting' flag if there are no records )
         $self->{keyset_group} = -1;
         $self->move( -1 );
     } else {
@@ -1490,17 +1703,25 @@ sub delete {
     
     my $self = shift;
     
-    my $sth = $self->{dbh}->prepare("delete from " . $self->{sql}->{from} . " where " . $self->{primary_key} . "=?");
+    my $sth = $self->{dbh}->prepare( "delete from " . $self->{sql}->{from} . " where "
+        . join( "=? and", @{$self->{primary_keys}} ) . "=?" );
+    
+    my @bind_values;
+    
+    foreach my $primary_key ( @{$self->{primary_keys}} ) {
+        push @bind_values, $self->{records}[$self->{slice_position}]->{ $self->{sql_to_widget_map}->{$primary_key} };
+    }
     
     eval {
-        $sth->execute($self->{records}[$self->{slice_position}]->{ $self->{sql_to_widget_map}->{$self->{primary_key}} }) || die $self->{dbh}->errstr;
+        $sth->execute( @bind_values )
+            || die $self->{dbh}->errstr;
     };
     
     if ( $@ ) {
-        new_and_run Gtk2::Ex::Dialogs::ErrorMsg(
-                                                    title   => "Error Deleting Record!",
-                                                    icon    => "error",
-                                                    text    => "<b>Database Server Says:</b>\n\n$@"
+        Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
+            title   => "Error Deleting Record!",
+            icon    => "error",
+            text    => "<b>Database Server Says:</b>\n\n$@"
         );
         $sth->finish;
         return FALSE;
@@ -1512,11 +1733,10 @@ sub delete {
     $self->{changed} = FALSE;
     
     # First remove the record from the keyset
-    splice(@{$self->{keyset}}, $self->position, 1);
+    splice( @{$self->{keyset}}, $self->position, 1) ;
     
     # Force a new slice to be fetched when we move(), which in turn handles with possible problems
-    # if there are no records ( ie we want to put the insertion marker '!' back into the primary
-    # key if there are no records )
+    # if there are no records ( ie we want to set the 'inserting' flag if there are no records )
     $self->{keyset_group} = -1;
     
     # Moving forwards will give problems if we're at the end of the keyset, so we move backwards instead
@@ -1534,17 +1754,16 @@ sub lock {
     my $self = shift;
     
     if ( ! $self->{data_lock_field} ) {
-        warn "\nGtk2::Ex::DBI::lock called without having a data_lock_field defined!\n";
-        return FALSE;
+        croak( "\nGtk2::Ex::DBI::lock called without having a data_lock_field defined!\n" );
     }
     
     # Apply the current record first
     if ( ! $self->apply ) {
         Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
-                title   => "Failed to lock record!",
-                icon    => "authentication",
-                text    => "There was an error applying the current record.\n"
-                                . "The lock operation has been aborted."
+            title   => "Failed to lock record!",
+            icon    => "authentication",
+            text    => "There was an error applying the current record.\n"
+                            . "The lock operation has been aborted."
         );
         return FALSE;
     }
@@ -1555,11 +1774,11 @@ sub lock {
     # Apply it ( which will implement the lock )
     if ( ! $self->apply ) {
         Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
-                title   => "Failed to lock record!",
-                icon    => "authentication",
-                text    => "There was an error applying the current record.\n"
-                                . "The lock operation has been aborted."
-                                                );
+            title   => "Failed to lock record!",
+            icon    => "authentication",
+            text    => "There was an error applying the current record.\n"
+                            . "The lock operation has been aborted."
+        );
         $self->revert; # Removes our changes to the lock field
         return FALSE;
     }
@@ -1577,8 +1796,7 @@ sub unlock {
     my $self = shift;
     
     if ( ! $self->{data_lock_field} ) {
-        warn "\nGtk2::Ex::DBI::unlock called without having a data_lock_field defined!\n";
-        return FALSE;
+        croak( "\nGtk2::Ex::DBI::unlock called without having a data_lock_field defined!\n" );
     }
     
     # Have to force this off, otherwise apply() method will fail
@@ -1589,11 +1807,11 @@ sub unlock {
     
     if ( ! $self->apply ) {
         Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
-                title   => "Failed to unlock record!",
-                icon    => "authentication",
-                text    => "There was an error applying the current record.\n"
-                                . "The unlock operation has been aborted."
-                                                );
+            title   => "Failed to unlock record!",
+            icon    => "authentication",
+            text    => "There was an error applying the current record.\n"
+                            . "The unlock operation has been aborted."
+        );
         $self->revert; # Removes our changes to the lock field
         return FALSE;
     }
@@ -1635,6 +1853,14 @@ sub setup_combo {
     
     my $combo = $self->{combos}->{$combo_name};
     
+    # Remember the current value.
+    # After setting up the model, we then try to select this value in the new model
+    my $previous_value;
+    
+    if ( $self->{constructor_done} ) {
+        $previous_value = $self->get_widget_value( $combo_name );
+    } 
+    
     # Transfer new where object if one is passed
     if ( $new_where_object ) {
         $combo->{sql}->{where_object} = $new_where_object;
@@ -1643,9 +1869,10 @@ sub setup_combo {
     # Deal with legacy bind_variables key
     if ( exists $combo->{sql}->{where_object} && exists $combo->{sql}->{where_object}->{bind_variables} ) {
         if ( $self->{debug} ) {
-            warn "Gtk2::Ex::DBI::setup_combo called with a legacy bind_variables key!\n";
+            carp( "Gtk2::Ex::DBI::setup_combo called with a legacy bind_variables key!\n" );
         }
         $combo->{sql}->{where_object}->{bind_values} = $combo->{sql}->{where_object}->{bind_variables};
+        delete $combo->{sql}->{where_object}->{bind_variables};
     }
     
     # First we clone a database connection - in case we're dealing with SQL Server here ...
@@ -1658,10 +1885,10 @@ sub setup_combo {
         $local_dbh = $self->{dbh}->clone;
     }
     
-    my $widget = $self->{form}->get_widget( $combo_name ) || 0;
+    my $widget = $self->get_widget( $combo_name ) || 0;
     
     if ( ! $widget ) {
-        warn "\nMissing widget: $combo_name\n";
+        warn "\n" . $self->{friendly_table_name} . " missing combo widget: $combo_name\n";
         return FALSE;
     }
     
@@ -1673,6 +1900,27 @@ sub setup_combo {
         return FALSE;
     }
     
+    # Support using an SQL select string *instead* of an array of field definitions
+    if ( exists $combo->{sql}->{select} && ! exists $combo->{fields} ) {
+        
+        # In this case, we clobber whatever was in the array of field definitions
+        # ( if there was anything ) and construct our own ...
+        
+        $combo->{fields} = ();
+        
+        #  ... and screw supporing aliases and other stuff
+        my @fields = split /\,/, $combo->{sql}->{select};
+        
+        foreach my $field ( @fields ) {
+            push @{$combo->{fields}},
+                {
+                    name    => $field,
+                    type    => "Glib::String" # TODO Detect type from database? Factor out detection from constructor?
+                };
+        }
+        
+    }
+    
     # Assemble items for liststore and SQL to get the data
     my ( @liststore_def, $sql );
     
@@ -1682,7 +1930,7 @@ sub setup_combo {
     
     foreach my $field ( @{$combo->{fields}} ) {
         
-        push @liststore_def, $field->{type};
+        push @liststore_def, $field->{type}; # TODO automatically select type based on column_info from DB server
         $sql .= " $field->{name},";
         
         # Add additional renderers for columns if defined
@@ -1712,8 +1960,8 @@ sub setup_combo {
     
     if ( $combo->{sql}->{where_object} ) {
         if ( ! $combo->{sql}->{where_object}->{bind_values} && ! $self->{quiet} ) {
-            warn "\n* * * Gtk2::Ex::DBI::setup_combo called with a where clause but *WITHOUT* an array of values to bind!\n";
-            warn "* * * While this method is supported, it is a security hazard. *PLEASE* take advantage of our support of bind values\n\n";
+            warn "\n* * * Gtk2::Ex::DBI::setup_combo called with a where clause but *WITHOUT* an array of values to bind!\n"
+                . "* * * While this method is supported, it is a security hazard. *PLEASE* take advantage of our support of bind values\n\n";
         }
         $sql .= " where $combo->{sql}->{where_object}->{where}";
     }
@@ -1796,16 +2044,240 @@ sub setup_combo {
     $widget->set_model( $model );
     
     if ( ref $widget eq "Gtk2::ComboBoxEntry" ) {
-        $widget->set_text_column( 1 );
-        #Set up autocompletion in the Combo's entry
+        
+        # We can only call $combo->set_text_column *once* per combo, so we
+        # have to remember when we've set it up
+        if ( ! $self->{combos_set}->{$combo_name} ) {
+            $widget->set_text_column( 1 );
+            $self->{combos_set}->{$combo_name} = TRUE;
+        }
+        
+        # Set up autocompletion in the Combo's entry
         my $entrycompletion = Gtk2::EntryCompletion->new;
         $entrycompletion->set_minimum_key_length( 1 );
         $entrycompletion->set_model( $model );
         $entrycompletion->set_text_column( 1 );
         $widget->get_child->set_completion( $entrycompletion );
+        
+    }
+    
+    # Finally select the previous value in the new model
+    if ( $self->{constructor_done} ) {
+        my $changelock_status = $self->{changelock}; # Remember the state of the changelock
+        $self->{changelock} = TRUE;
+        $self->set_widget_value( $combo_name, $previous_value );
+        $self->{changelock} = $changelock_status;
     }
     
     return TRUE;
+    
+}
+
+sub setup_autocompletion {
+    
+    # Convenience function that creates / refreshes a combo's model & sets up autocompletion
+    
+    my ( $self, $autocompletion_name, $new_where_object ) = @_;
+    
+    my $autocompletion = $self->{autocompletions}->{$autocompletion_name};
+    
+    # Transfer new where object if one is passed
+    if ( $new_where_object ) {
+        $autocompletion->{sql}->{where_object} = $new_where_object;
+    }
+    
+    # First we clone a database connection - in case we're dealing with SQL Server here ...
+    #  ... SQL Server doesn't like it if you do too many things ( > 1 ) with one connection :)
+    my $local_dbh;
+    
+    if ( exists $autocompletion->{alternate_dbh} ) {
+        $local_dbh = $autocompletion->{alternate_dbh}->clone;
+    } else {
+        $local_dbh = $self->{dbh}->clone;
+    }
+    
+    my $widget = $self->get_widget( $autocompletion_name ) || 0;
+    
+    if ( ! $widget ) {
+        warn "\n" . $self->{friendly_table_name} . " missing autocompletion widget: $autocompletion_name\n";
+        return FALSE;
+    }
+    
+    if ( ! $autocompletion->{sql} ) {
+        warn "\nMissing an SQL object in the combo definition for $autocompletion_name!\n\n";
+        return FALSE;
+    } elsif ( ! $autocompletion->{sql}->{from} ) {
+        warn "\nMissing the 'from' key in the sql object in the autocompletion definition for $autocompletion_name!\n\n";
+        return FALSE;
+    }
+    
+    # Support using an SQL select string *instead* of an array of field definitions
+    if ( exists $autocompletion->{sql}->{select} && ! exists $autocompletion->{fields} ) {
+        
+        # In this case, we clobber whatever was in the array of field definitions
+        # ( if there was anything ) and construct our own ...
+        
+        $autocompletion->{fields} = ();
+        
+        #  ... and screw supporing aliases and other stuff
+        my @fields = split /\,/, $autocompletion->{sql}->{select};
+        
+        foreach my $field ( @fields ) {
+            push @{$autocompletion->{fields}},
+                {
+                    name    => $field,
+                    type    => "Glib::String" # TODO Detect type from database? Factor out detection from constructor?
+                };
+        }
+        
+    }
+    
+    # Assemble items for liststore and SQL to get the data
+    my ( @liststore_def, $sql );
+    
+    $sql = "select";
+    
+    my $column_no = 0;
+    
+    foreach my $field ( @{$autocompletion->{fields}} ) {
+        
+        push @liststore_def, $field->{type}; # TODO automatically select type based on column_info from DB server
+        $sql .= " $field->{name},";
+        
+        $column_no ++;
+        
+    }
+    
+    chop( $sql );
+    
+    $sql .= " from " . $autocompletion->{sql}->{from};
+    
+    if ( $autocompletion->{sql}->{where_object} ) {
+        if ( ! $autocompletion->{sql}->{where_object}->{bind_values} && ! $self->{quiet} ) {
+            warn "\n* * * Gtk2::Ex::DBI::setup_combo called with a where clause but *WITHOUT* an array of values to bind!\n"
+                . "* * * While this method is supported, it is a security hazard. *PLEASE* take advantage of our support of bind values\n\n";
+        }
+        $sql .= " where $autocompletion->{sql}->{where_object}->{where}";
+    }
+    
+    if ( $autocompletion->{sql}->{group_by} ) {
+        $sql .= " group by " . $autocompletion->{sql}->{group_by};
+    }
+    
+    if ( $autocompletion->{sql}->{order_by} ) {
+        $sql .= " order by " . $autocompletion->{sql}->{order_by};
+    }
+    
+    my $sth;
+    
+    eval {
+        $sth = $local_dbh->prepare( $sql )
+            || die $local_dbh->errstr;
+    };
+    
+    if ( $@ ) {
+        Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
+            title   => "Error setting up combo box: $autocompletion_name",
+            icon    => "error",
+            text    => "<b>Database Server Says:</b>\n\n$@"
+        );
+        if ( $self->{debug} ) {
+            warn "\n$sql\n";
+        }
+        return FALSE;
+    }
+    
+    # We have to use 'exists' here, otherwise we inadvertently create the where_object hash,
+    # just by testing for it ... ( or by testing for bind_variables anyway )
+    if ( exists $autocompletion->{sql}->{where_object} && exists $autocompletion->{sql}->{where_object}->{bind_values} ) {
+        eval {
+            $sth->execute( @{$autocompletion->{sql}->{where_object}->{bind_values}} )
+                || die $local_dbh->errstr;
+        };
+    } else {
+        eval {
+            $sth->execute || die $local_dbh->errstr;
+        };
+    }
+    
+    if ( $@ ) {
+        Gtk2::Ex::Dialogs::ErrorMsg->new_and_run(
+            title   => "Error setting up combo box: $autocompletion_name",
+            icon    => "error",
+            text    => "<b>Database Server Says:</b>\n\n$@\n\n"
+                        . "Check the definintion of the table: " . $autocompletion->{sql}->{from}
+        );
+        return FALSE;
+    }
+    
+    # Create the model
+    my $model = Gtk2::ListStore->new( @liststore_def );
+    
+    while ( my @row = $sth->fetchrow_array ) {
+        
+        # We use fetchrow_array instead of fetchrow_hashref so
+        # we can support the use of aliases in the fields
+        
+        my @model_row;
+        my $column = 0;
+        push @model_row, $model->append;
+        
+        foreach my $field ( @{$autocompletion->{fields}} ) {
+            push @model_row, $column, $row[$column];
+            $column ++;
+        }
+        
+        $model->set( @model_row );
+        
+    }
+    
+    $sth->finish;
+    $local_dbh->disconnect;
+    
+    # Set up autocompletion in the Combo's entry
+    my $entrycompletion = Gtk2::EntryCompletion->new;
+    $entrycompletion->set_minimum_key_length( 0 );
+    $entrycompletion->set_model( $model );
+    $entrycompletion->set_text_column( 1 );
+    $widget->set_completion( $entrycompletion );
+    
+    return TRUE;
+    
+}
+
+sub get_widget {
+	
+    # Returns a given widget, whether from a Gtk2::GladeXML object,
+    # or a Gtk2::Builder object
+    
+    my ( $self, $widget_name ) = @_;
+    
+    if ( exists $self->{form} && ref $self->{form} eq "Gtk2::GladeXML" ) {
+    	
+        my $widget = $self->{form}->get_widget( $widget_name );
+        
+        if ( ! $widget && $self->{widget_prefix} ) {
+            $widget = $self->{form}->get_widget( $self->{widget_prefix} . $widget_name );
+        }
+        
+        return $widget;
+        
+    } elsif ( exists $self->{builder} && ref $self->{builder} eq "Gtk2::Builder" ) {
+        
+        my $widget = $self->{form}->get_object( $widget_name );
+        
+        if ( ! $widget && $self->{widget_prefix} ) {
+            $widget = $self->{form}->get_object( $self->{widget_prefix} . $widget_name );
+        } 
+        
+        return $widget;
+        
+    } else {
+        
+        carp( "get_widget() called but we don't have a form ( Gtk2::GladeXML ) or builder ( Gtk2::Builder ) object available" );
+        return undef;
+        
+    }
     
 }
 
@@ -1815,16 +2287,16 @@ sub get_widget_value {
     
     my ( $self, $fieldname ) = @_;
     
-    my $widget = $self->{form}->get_widget( $fieldname );
+    my $widget = $self->get_widget( $fieldname );
     
     if ( ! $widget ) {
-    	
+        
         # No widget by this name. Check for split-widget widgets ( currently TimeSpinners )
         # At the moment, we only check for the presence of a $field_hh - named field
         
         # TODO Remove this bullshit. We need to create a custom widget for Time
         
-        my $hh_test = $self->{form}->get_widget( $fieldname . "_hh" );
+        my $hh_test = $self->get_widget( $fieldname . "_hh" );
         my $time_value;
         if ( $hh_test ) {
             foreach my $type qw / hh mm ss / {
@@ -1836,9 +2308,10 @@ sub get_widget_value {
             }
             return $time_value;
         } else {
-            warn "\nGtk2::Ex::DBI::get_widget_value called on non-existant field: $fieldname!\n\n";
+            carp( "\nGtk2::Ex::DBI::get_widget_value called on non-existant field: $fieldname!" );
             return undef;
         }
+        
     }
     
     my $type = ref $widget;
@@ -1905,14 +2378,14 @@ sub get_widget_value {
     } elsif ( $type eq "Gtk2::CheckButton" ) {
         
         if ( $widget->get_active ) {
-            $value = TRUE;
+            $value = 1;
         } else {
-            $value = FALSE;
+            $value = 0;
         }
         
     } else {
         
-        my $txt_value = $self->{form}->get_widget( $fieldname )->get_text;
+        my $txt_value = $widget->get_text;
         
         if ( $txt_value || $txt_value eq "0" ) { # Don't push an undef value just because our field has a zero in it
             $value = $txt_value;
@@ -1932,17 +2405,17 @@ sub get_widget_value {
         
         foreach my $item ( keys %{$widget_def}) {
     		
-    		# Possible values are:
-    		# - sql_fieldname	- ( not related to formatting )
-    		# - number 			- a hash describing numeric formatting
-    		# - date			- a hash describing date formatting
-    		
-    		if ( $item		eq "number" ) {
-    			$value		= $self->formatter_number_from_widget( $value, $widget_def->{number} );
-    		} elsif ( $item	eq "date" ) {
-    			$value		= $self->formatter_date_from_widget( $value, $widget_def->{date} );
-    		}
-    		
+    	    # Possible values are:
+    	    # - sql_fieldname	- ( not related to formatting )
+    	    # - number 			- a hash describing numeric formatting
+    	    # - date			- a hash describing date formatting
+    	    
+    	    if ( $item        eq "number" ) {
+    	        $value        = $self->formatter_number_from_widget( $value, $widget_def->{number} );
+    	    } elsif ( $item   eq "date" ) {
+    	        $value        = $self->formatter_date_from_widget( $value, $widget_def->{date} );
+    	    }
+    	    
         }
         
     }
@@ -1957,7 +2430,7 @@ sub set_widget_value {
     
     my ( $self, $fieldname, $value ) = @_;
     
-    my $widget = $self->{form}->get_widget( $fieldname );
+    my $widget = $self->get_widget( $fieldname );
     
     my $local_value = $value;
     
@@ -1970,25 +2443,25 @@ sub set_widget_value {
     	my $widget_def = $self->{widgets}->{$fieldname};
     	
     	foreach my $item ( keys %{$widget_def}) {
-    		
-    		if ( $item		eq "number" ) {
-    			$local_value	= $self->formatter_number_to_widget( $local_value, $widget_def->{number} );
-    		} elsif ( $item	eq "date" ) {
-    			$local_value	= $self->formatter_date_to_widget( $local_value, $widget_def->{date} );
-    		}
-    		
+    	    
+    	    if ( $item          eq "number" ) {
+    	        $local_value    = $self->formatter_number_to_widget( $local_value, $widget_def->{number} );
+    	    } elsif ( $item     eq "date" ) {
+    	        $local_value    = $self->formatter_date_to_widget( $local_value, $widget_def->{date} );
+    	    }
+    	    
         }
         
     }
     
     if ( ! $widget ) {
         
-        # No widget by this name. Check for split-widget widgets ( currently TimeSpinners )
+        # Check for split-widget widgets ( currently TimeSpinners )
         # At the moment, we only check for the presence of a $field_hh - named field
         
         # TODO Remove this bullshit. We need to create a custom widget for Time
         
-        my $hh_test = $self->{form}->get_widget( $fieldname . "_hh" );
+        my $hh_test = $self->get_widget( $fieldname . "_hh" );
         my $time_value;
         if ( $hh_test ) {
             # Found an hour widget. Split time into 3 values and apply
@@ -2003,106 +2476,119 @@ sub set_widget_value {
                 $self->set_widget_value( $fieldname . "_" . $type, $hhmmss[$counter] || 0 );
                 $counter ++;
             }
-        } elsif ( ! $self->{quiet} ) {
-            warn "*** Field $fieldname is missing a widget! ***\n";
+        } elsif ( ! $self->{quiet} && $fieldname ne $self->{primary_key} ) {
+            # We don't warn on a missing primary key *widget*, as this is perfectly safe
+            # ( updates use the in-memory primary key )
+            carp( "Field $fieldname is missing a widget" );
             return FALSE;
         }
         
-    } else {
+    }
+    
+    
+    my $type = ( ref $widget );
+    
+    if ( $type eq "Gtk2::Calendar" ) {
         
-        my $type = ( ref $widget );
-        
-        if ( $type eq "Gtk2::Calendar" ) {
+        if ( $local_value ) {
             
-            if ( $local_value ) {
-                
-                my $year = substr( $local_value, 0, 4 );
-                my $month = substr( $local_value, 5, 2 );
-                my $day = substr( $local_value, 8, 2 );
-                
-                # NOTE! NOTE! Apparently GtkCalendar has the months starting at ZERO!
-                # Therefore, take one off the month...
-                $month --;
-                
-                if ( $month != -1 ) {
-                    $widget->select_month( $month, $year );
-                    $widget->select_day( $day );
-                } else {
-                    # Select the current month / year
-                    ( $month, $year ) = (localtime())[4, 5];
-                    $year += 1900;
-                    #$month += 1;
-                    $widget->select_month( $month, $year );
-                    # But de-select the day
-                    $widget->select_day( 0 );
+            my $year = substr( $local_value, 0, 4 );
+            my $month = substr( $local_value, 5, 2 );
+            my $day = substr( $local_value, 8, 2 );
+            
+            # Months start at zero ...
+            $month --;
+            
+            if ( $month != -1 ) {
+                if ( $self->{debug} ) {
+                    warn "Setting Day: $day, Month: $month, Year: $year"
                 }
-                
+                $widget->select_month( $month, $year );
+                $widget->select_day( $day );
             } else {
                 # Select the current month / year
-                my ( $month, $year ) = (localtime())[4, 5];
+                ( $month, $year ) = (localtime())[4, 5];
                 $year += 1900;
-                #$month += 1;
                 $widget->select_month( $month, $year );
+                # But de-select the day
                 $widget->select_day( 0 );
             }
             
-        } elsif ( $type eq "Gtk2::ToggleButton" ) {
-            
-            $widget->set_active( $local_value );
-            
-        } elsif ( $type eq "Gtk2::ComboBoxEntry" || $type eq "Gtk2::ComboBox" ) {
-            
-            # This is some ugly stuff. Gtk2 doesn't support selecting an iter in a model based on the string
-            
-            # See http://bugzilla.gnome.org/show_bug.cgi?id=149248
-            
-            # TODO Broken Gtk2 combo box entry workaround
-            # If we can't get above bug resolved, perhaps load the ID / value pairs into something that supports
-            # rapid searching so we don't have to loop through the entire list, which could be *very* slow if the list is large
-            
-            # Check to see whether this combo has a model
-            my $model = $widget->get_model;
-            
-            if ( ! $model) {
-                warn "\n*** Field $fieldname has a matching combo, but there is no model attached!\n"
-                        . "    You MUST set up all your combo's models before creating a Gtk2::Ex::DBI object ***\n\n";
-                return FALSE;
-            }
-            
-            my $iter = $model->get_iter_first;
-            
-            if ( $type eq "Gtk2::ComboBoxEntry" ) {
-                $widget->get_child->set_text( "" );
-            }
-            
-            while ( $iter ) {
-                if ( ( defined $local_value ) &&
-                    ( $local_value eq $model->get( $iter, 0) ) ) {
-                        $widget->set_active_iter( $iter );
-                        last;
-                }
-                $iter = $model->iter_next( $iter );
-            } 
-            
-        } elsif ( $type eq "Gtk2::TextView" ) {
-            
-            $widget->get_buffer->set_text( $local_value || "" );
-            
-        } elsif ( $type eq "Gtk2::CheckButton" ) {
-            
-            $widget->set_active( $local_value );
-            
         } else {
-            
-            # Assume everything else has a 'set_text' method. Add more types if necessary...
-            # Little test to make perl STFU about 'Use of uninitialized value in subroutine entry'
-            if ( defined( $local_value ) ) {
-                $widget->set_text( $local_value );
-            } else {
-                $widget->set_text( "" );
-            }
-            
+            # Select the current month / year
+            my ( $month, $year ) = (localtime())[4, 5];
+            $year += 1900;
+            $widget->select_month( $month, $year );
+            $widget->select_day( 0 );
         }
+        
+    } elsif ( $type eq "Gtk2::ToggleButton" ) {
+        
+        $widget->set_active( $local_value );
+        
+    } elsif ( $type eq "Gtk2::ComboBoxEntry" || $type eq "Gtk2::ComboBox" || $type eq "Gtk2::Combo" ) {
+        
+        # This is some ugly stuff. Gtk2 doesn't support selecting an iter in a model based on the string
+        
+        # See http://bugzilla.gnome.org/show_bug.cgi?id=149248
+        
+        # TODO Broken Gtk2 combo box entry workaround
+        # If we can't get above bug resolved, perhaps load the ID / value pairs into something
+        # that supports rapid searching so we don't have to loop through the entire list, which
+        # could be *very* slow if the list is large
+        
+        # Check to see whether this combo has a model
+        my $model = $widget->get_model;
+        
+        if ( ! $model ) {
+            carp( "Field $fieldname has a matching combo, but there is no model attached!\n"
+                    . "    You MUST set up all your combo's models before creating a Gtk2::Ex::DBI object" );
+            return FALSE;
+        }
+        
+        my $iter = $model->get_iter_first;
+        
+        if ( $type eq "Gtk2::ComboBoxEntry" ) {
+            $widget->get_child->set_text( "" );
+        }
+        
+        my $match_found = FALSE;
+        
+        while ( $iter ) {
+            if ( ( defined $local_value ) &&
+                ( $local_value eq $model->get( $iter, 0 ) ) ) {
+                    $match_found = TRUE;
+                    $widget->set_active_iter( $iter );
+                    last;
+            }
+            $iter = $model->iter_next( $iter );
+        } 
+        
+        # There's only really a need to warn if we've actually been passed a value, because
+        # if we've been passed a 0 or undef, we de-select the combo, and this will return a zero
+        # when we call $self->get_widget_value() anyway, so this is as good as finding a match
+         
+        if ( ! $match_found && $value ) {
+            carp( "Failed to set $fieldname to value $value\n ( wasn't in the model )" );
+        }
+        
+    } elsif ( $type eq "Gtk2::TextView" ) {
+        
+        $widget->get_buffer->set_text( $local_value || "" );
+        
+    } elsif ( $type eq "Gtk2::CheckButton" ) {
+        
+        $widget->set_active( $local_value );
+        
+    } elsif ( $type eq "Gtk2::SpinButton" ) {
+        
+        $widget->set_value( $local_value || 0 );
+        
+    } else {
+        
+        # Assume everything else has a 'set_text' method. Add more types if necessary...
+        $widget->set_text( defined $local_value ? $local_value : "" );
+        
     }
     
     return TRUE;
@@ -2158,18 +2644,15 @@ sub set_active_iter_for_broken_combo_box {
     my $current_iter = $widget->get_active_iter;
     my $iter = $model->get_iter_first;
     
-    while ($iter) {
+    while ( $iter ) {
         if ( $string eq $model->get( $iter, 1 ) ) {
-            if ( $self->{debug} ) {
-                    warn "\nset_active_iter_for_broken_combo_box found a match!\n\n";
-            }
-            $widget->set_active_iter($iter);
-            if ( $iter != $current_iter ) {
+            $widget->set_active_iter( $iter );
+            if ( ! $current_iter || $iter != $current_iter ) {
                 $self->changed;
             }
             last;
         }
-        $iter = $model->iter_next($iter);
+        $iter = $model->iter_next( $iter );
     }
     
     return FALSE; # Apparently we must return FALSE so the entry gets the event as well
@@ -2263,9 +2746,15 @@ sub formatter_number_to_widget {
     
     # $options can contain:
     #  - currency
+    #  - percentage
     #  - decimals
     #  - decimal_fill
     #  - separate_thousands
+    
+    # Avoid stoopid warnings - this will replace NULL values zeros, which is OK by me ...
+    if ( ! $value ) {
+        $value = 0;
+    }
     
     # Strip out dollar signs
     $value =~ s/\$//g;
@@ -2273,6 +2762,11 @@ sub formatter_number_to_widget {
     # Allow for our number of decimal places
     if ( $options->{decimals} ) {
         $value *= 10 ** $options->{decimals};
+    }
+    
+    # For percentages, multiply by 100
+    if ( $options->{percentage} ) {
+    	$value *= 100;
     }
     
     # Round
@@ -2309,7 +2803,14 @@ sub formatter_number_to_widget {
     
     # Prepend a dollar sign for currency
     if ( $options->{currency} ) {
-        $value = "\$" . $value;
+        $value = '$' . $value;
+        # If this is a negative value, we want to force the negative sign to the left of the dollar sign ...
+        $value =~ s/\$-/-\$/;
+    }
+    
+    # Append a percentage sign for percentages
+    if ( $options->{percentage} ) {
+    	$value .= '%';
     }
     
     return $value;
@@ -2331,7 +2832,7 @@ sub formatter_date_to_widget {
 		}
 		
 		if ( $options->{format} eq "ddmmyyyy" ) {
-			my ( $yyyy, $mm, $dd ) = split /-/, $value;
+			my ( $yyyy, $mm, $dd ) = split /[-\/]/, $value;
         	$value = $dd . "-" . $mm . "-" . $yyyy;
 		}
 		
@@ -2356,6 +2857,11 @@ sub formatter_number_from_widget {
         $value =~ s/\,//g;
     }
     
+    if ( $value =~ /%/ ) {
+        $value =~ s/%//g;
+        $value /= 100;
+    }
+    
     return $value;
     
 }
@@ -2369,8 +2875,17 @@ sub formatter_date_from_widget {
     
     if ( $value ) {
         if ( $options->{format} eq "ddmmyyyy" ) {
-	        my ( $dd, $mm, $yyyy ) = split /-/, $value;
-    	    $value = $yyyy . "-" . $mm . "-" . $dd;
+	        
+	        my ( $dd, $mm, $yyyy ) = split /[-\/]/, $value;
+	        
+	        if ( length( $yyyy) == 2 ) {
+	            $yyyy = '20' . $yyyy;
+	        }
+	        
+    	    $value = $yyyy . "-"
+    	       . sprintf( "%02d", $mm ) . "-"
+    	       . sprintf( "%02d", $dd );
+    	    
         }
     } else {
         $value = undef;
@@ -2497,7 +3012,7 @@ sub find_dialog {
     # Construct a model to use for the 'field' combo box in the criteria builder
     $self->{find}->{field_model} = Gtk2::ListStore->new( "Glib::String" );
     
-    foreach my $field ( @{$self->{fieldlist}} ) {
+    foreach my $field ( $self->fieldlist ) {
         $self->{find}->{field_model}->set(
              $self->{find}->{field_model}->append,
              0,  $field
@@ -2581,25 +3096,59 @@ sub find_do_search {
         
         if ( $iter ) {
             
+            my $field_name = $criteria->{field_combo}->get_child->get_text;
+            
             $operator = $criteria->{operator_combo}->get_model->get( $iter, 0 );
             
             if ( $where_clause ) {
                     $where_clause .= " and ";
             }
             
-            $where_clause .= $criteria->{field_combo}->get_child->get_text
-                . " " . $operator . " " . "?";
+            $where_clause .= $field_name . " " . $operator . " " . "?";
+            
+            my ( $criteria_text, $criteria_value );
             
             # We need to put wildcards around a 'like' search
             if ( $operator eq "like" ) {
-                push @{$bind_values}, "%" . $criteria->{criteria_widget}->get_text . "%";
+                $criteria_text = "%" . $criteria->{criteria_widget}->get_text . "%";
             } else {
-                push @{$bind_values}, $criteria->{criteria_widget}->get_text;
+                $criteria_text = $criteria->{criteria_widget}->get_text;
             }
+            
+            # Check if this field's widget is a combo. If it is, we can't search the table
+            # on the text entered. We have to look up the text in the combo's model, and
+            # search on that instead
+            
+            my $widget = $self->get_widget( $field_name );
+            
+            if ( $widget && ref( $widget ) eq 'Gtk2::ComboBoxEntry' ) {
+                my $model = $widget->get_model;
+                my $iter = $model->get_iter_first;
+                while ( $iter ) {
+                    if ( $criteria_text eq $model->get( $iter, 1 ) ) {
+                        $criteria_value = $model->get( $iter, 0 );
+                        last;
+                    }
+                    $iter = $model->iter_next( $iter );
+                }
+                if ( ! defined $criteria_value ) {
+                    # We haven't found a match in the combo's model. Not much we can do
+                    # other than use the text we've been given.
+                    # In cases where the key text is the display text, this would work.
+                    # In other cases, it probably won't
+                    $criteria_value = $criteria_text;
+                }
+            } else {
+                $criteria_value = $criteria_text;
+            }
+            
+            push @{$bind_values}, $criteria_value;
             
         }
         
     }
+    
+    print "Find Dialog querying with:\n$where_clause\n" . Dumper( $bind_values );
     
     $self->query(
         {
@@ -2830,40 +3379,19 @@ my $dbh = DBI->connect (
 
 my $prospects_form = Gtk2::GladeXML->new("/path/to/glade/file/my_form.glade", 'Prospects');
 
-my $data_handler = Gtk2::Ex::DBI->new( {
-            dbh         => $dbh,
-            schema      => "sales",
-            sql         => {
-                              select       => "*",
-                              from         => "Prospects",
-                              where        => "Actve=? and Employees>?",
-                              bind_values  => [ 1, 200 ],
-                              order_by     => "ClientName",
-                           },
-            form        => $prospects,
-            on_current  => \&Prospects_current,
-            calc_fields =>
-            {
-                        calc_total => 'eval { $self->{form}->get_widget("value_1")->get_text
-                            + $self->{form}->get_widget("value_2")->get_text }'
-            },
-            default_values     =>
-            {
-                        ContractYears  => 5,
-                        Fee            => 2000
-            }
+my $prospects_form = Gtk2::Ex::DBI->new( {
+            dbh         => $dbh
+         ,  sql         => {
+                              select       => "*"
+                            , from         => "Prospects"
+                           }
+         ,  form        => $prospects
 }
 );
 
-sub Prospects_current {
-
-            # I get called when moving from one record to another ( see on_current key, above )
-
-}
-
 =head1 DESCRIPTION
 
-This module automates the process of tying data from a DBI datasource to widgets on a Glade-generated form.
+This class ties data from a DBI datasource to widgets in a Gtk2+ window ( generated by Glade ).
 All that is required is that you name your widgets the same as the fields in your data source.
 You have to set up combo boxes ( ie create your Gtk2::ListStore and
 attach it to your combo box ) *before* creating your Gtk2::Ex::DBI object.
@@ -2872,11 +3400,12 @@ Steps for use:
 
 * Open a DBI connection
 
-* Create a Gtk2::GladeXML object ( form )
+* Create a window from a Gtk2::GladeXML object
 
-* Create a Gtk2::Ex::DBI object and link it to your form
+* Create a Gtk2::Ex::DBI object and link it to your window
 
-You would then typically create some buttons and connect them to the methods below to handle common actions
+You would then typically create some buttons ( in your Glade object )
+and connect them to the methods below to handle common actions
 such as inserting, moving, deleting, etc.
 
 =head1 METHODS
@@ -2889,15 +3418,6 @@ Object constructor. For more info, see section on CONSTRUCTION below.
 
 =back
 
-=head2 fieldlist
-
-=over 4
-
-Returns a fieldlist as an array, based on the current query.
-Mainly for internal Gtk2::Ex::DBI use
-
-=back
-
 =head2 query ( [ where_object ] )
 
 =over 4
@@ -2905,6 +3425,8 @@ Mainly for internal Gtk2::Ex::DBI use
 Requeries the Database Server, either with the current where clause, or with a new one ( if passed ).
 
 Version 2.x expects a where_object hash, containing the following keys:
+
+=back
 
 =head3 where
 
@@ -2923,8 +3445,6 @@ insert values directly into your where clause.
 
 bind_values should be an array of values, one for each placeholder in your where clause.
 
-=back
-
 Version 1.x expected to be passed an optional string as a new where clause.
 This behaviour is still supported for backwards compatibility. If a version 1.x call
 is detected ( ie if where_object isn't a hash ), any existing bind_values will be deleted
@@ -2936,8 +3456,10 @@ is detected ( ie if where_object isn't a hash ), any existing bind_values will b
 =over 4
 
 Inserts a new record in the *in-memory* recordset and sets up default values,
-either from the database schema, or optionally overridden with values from the
-default_values hash.
+either from database defaults, or optionally overridden with values from the
+default_values hash. If you're using sequences, the next sequence value will not
+be fetched yet; this will happen when the user first starts entering data in the
+new record.
 
 =back
 
@@ -2946,14 +3468,6 @@ default_values hash.
 =over 4
 
 Returns the number of records in the current recordset.
-
-=back
-
-=head2 paint
-
-=over 4
-
-Paints the form with current data. Mainly for internal Gtk2::Ex::DBI use.
 
 =back
 
@@ -2977,14 +3491,6 @@ Returns TRUE if successful, FALSE if unsuccessful.
 
 =back
 
-=head2 changed
-
-=over 4
-
-Sets the 'changed' flag, which is used internally when deciding if an 'apply' is required.
-
-=back
-
 =head2 revert
 
 =over 4
@@ -2994,15 +3500,19 @@ Deletes the in-memory recordset if we were inserting a new record.
 
 =back
 
+=head2 undo
+
+=over 4
+
+Synonym of revert
+
+=back
+
 =head2 delete
 
 =over 4
 
-Deletes the current record. Asks for confirmation first.
-If you are selecting from multiple tables, this method will not work as
-expected, if at all, as we don't know which table you want to delete from. The best case
-scenario is an error - this is what MySQL does. Other database may delete from both / all
-tables. I haven't tried this, but I wouldn't be surprised ...
+Deletes the current record.
 
 =back
 
@@ -3014,6 +3524,16 @@ A convenience function to set a widget ( via it's fieldname ) with a given value
 This function will automatically set up data formatting for you ( eg numeric, date ),
 based on the assumption that you are giving it data in the format that the database
 server likes ( for example, yyyymmdd format dates ).
+
+=back
+
+=head2 get_widget( widget_name )
+
+=over 4
+
+A convenience function to get a widget. Works with both Glade and GTK Builder.
+If no object with the given name exists, we also check if an object with the given name,
+starting with $self->{widget_prefix} exists. widget_prefix can be passed in the constructor.
 
 =back
 
@@ -3044,7 +3564,7 @@ but NOT represented by a widget.
 
 Convenience function that returns the sum of all given widgets. get_widget_value() is used
 to retrieve each value, which will stips formatting from managed widgets, but you can include
-non-managed widgets as well - they just have to ben in the same Gtk2::GladeXML file.
+non-managed widgets as well - they just have to be in the same window.
 
 =back
 
@@ -3052,8 +3572,8 @@ non-managed widgets as well - they just have to ben in the same Gtk2::GladeXML f
 
 =over 4
 
-Locks the current record to prevent editing. For this to succeed, you must have
-specified a data_lock_field in your constructor. The apply() method is automatically
+Locks the current record to prevent editing. This is implemented by setting a value in a field
+that you specify as a value of data_lock_field in your constructor. The apply() method is automatically
 called when locking, and if apply() fails, lock() also fails.
 
 =back
@@ -3074,6 +3594,20 @@ Creates a new model for the combo of widget_name.
 You can use this to refresh the items in a combo's list.
 You can optionally pass a hash containing a new where_object
 ( where clause and bind_values ).
+
+You can call this method on widgets that aren't being managed
+( ie aren't in the field list ).
+
+=back
+
+=head2 setup_autocompletion ( widget_name, [ new_where_object ] )
+
+=over 4
+
+Creates an autocompletion object for a text entry. Autocompletions
+are similar to combo boxes, but don't have a button thing. They're
+invisible additions to a text entry that magically pop up a list
+of values to select from.
 
 =back
 
@@ -3108,7 +3642,217 @@ To disable this behaviour, set the disable_find key to TRUE ( see 'new' method )
 
 =over 4
 
-Returns the current position in the keyset ( starting at zero ).
+Returns the current position in the recordset ( starting at zero ).
+
+=back
+
+=head2 fieldlist
+
+=over 4
+
+Returns a fieldlist as an array, based on the current query.
+Mainly for internal Gtk2::Ex::DBI use
+
+=back
+
+=head2 find_dialog
+
+=over 4
+
+Pops up a rudimentary 'find' dialog for searching. FIXME :)
+
+=back
+
+=head1 INTERNAL METHODS
+
+=head2 assemble_new_record
+
+=over 4
+
+This method is called by the insert method. It actually creates the hash that
+represents the new record. It sets default values using either database defaults
+or from the default_values hash.
+
+=back
+
+=head2 paint
+
+=over 4
+
+Paints the form with current data.
+
+=back
+
+=head2 fetch_new_slice
+
+=over 4
+
+Fetches a new slice of records based on the apeture size.
+
+=back
+
+=head2 changed
+
+=over 4
+
+Called each time a widget value that Gtk2::Ex::DBI is managing changes.
+
+=back
+
+=head2 last_insert_id
+
+=over 4
+
+Wrapper around DBI's last_insert_id(), with some smarts for various
+broken bits in different drivers.
+
+=back
+
+=head2 record_status_label_set
+
+=over 4
+
+Sets the record status label.
+
+=back
+
+=head2 paint_calculated
+
+=over 4
+
+Sets the values of all calculated fields. Called from the changed method.
+
+=back
+
+=head2 set_record_spinner_range
+
+=over 4
+
+Sets the record spinner range. Nothing to see here.
+
+=back
+
+=head2 process_entry_keypress
+
+=over 4
+
+Called on every keypress. Injects a 'tab' keypress when the user hits
+'enter'.
+
+=back
+
+=head2 reset_record_status
+
+=over 4
+
+Resets the record status
+
+=back
+
+=head2 formatter_number_to_widget
+
+=over 4
+
+Performs numeric formatting
+
+=back
+
+=head2 formatter_date_to_widget
+
+=over 4
+
+Performs date formatting
+
+=back
+
+=head2 formatter_number_from_widget
+
+=over 4
+
+Opposite of formatter_number_to_widget
+
+=back
+
+=head2 formatter_date_from_widget
+
+=over 4
+
+Opposite of formatter_date_to_widget
+
+=back
+
+=head2 parse_sql_server_default
+
+=over 4
+
+Parses default definitions from SQL Server ( v7 )
+
+=back
+
+=head2 build_right_click_menu
+
+=over 4
+
+Builds the menu that pops up when you right-click most widgets that we manage
+
+=back
+
+=head2 set_active_iter_for_broken_combo_box
+
+=over 4
+
+This method is called when a ComboBoxEntry's value is changed
+See http://bugzilla.gnome.org/show_bug.cgi?id=156017
+
+Wow ... a 10-year-old bug. They're not going to fix it :(
+
+=back
+
+=head2 find_do_search
+
+=over 4
+
+Called when user activates search functionality in the find dialog
+
+=back
+
+=head2 find_dialog_add_criteria
+
+=over 4
+
+Creates a new row of widgets for entering more criteria in the find dialog
+
+=back
+
+=head2 calculator_process_editing
+
+=over 4
+
+Calculates totals in our calculator
+
+=back
+
+=head2 destroy_signal_handlers
+
+=over 4
+
+Destroys all signal handlers Gtk2::Ex::DBI has created.
+
+=back
+
+=head2 destroy_self
+
+=over 4
+
+Internal use only.
+
+=back
+
+=head2 destroy
+
+=over 4
+
+Destroys itself
 
 =back
 
@@ -3120,7 +3864,7 @@ The new() method expects a hash of key / value pairs.
 
 =over 4
 
-a DBI database handle
+A DBI database handle
 
 =back
 
@@ -3128,7 +3872,17 @@ a DBI database handle
 
 =over 4
 
-the Gtk2::GladeXML object that created your form
+The Gtk2::GladeXML object to bind to. You need to set either
+the 'form' or 'builder' key.
+
+=back
+
+=head2 builder
+
+=over 4
+
+A Gtk2::Builder object to bind to. You need to set either
+the'form' or 'builder' key.
 
 =back
 
@@ -3144,6 +3898,8 @@ Minimum requirements for the sql object are the 'select' and 'from' keys, or alt
 All others are optional.
 
 Details:
+
+=back
 
 =head2 select
 
@@ -3198,8 +3954,6 @@ work for these. If you want to enable updates for pass_through queries, you'll h
 
 =back
 
-=back
-
 That's it for essential keys. All the rest are optional.
 
 =head2 widgets
@@ -3242,6 +3996,17 @@ A reference to some Perl code to run when moving to a new record
 
 =back
 
+=head2 before_query
+
+=over 4
+
+A reference to some Perl code to run *before* executing a query.
+Your code will be passed the 'where' object. Keep in mind this could either be a scalar or a hash,
+depending on how you're using it.
+Return TRUE to allow the query method to continue, or FALSE to prevent the query method from continuing.
+
+=back
+
 =head2 before_apply
 
 =over 4
@@ -3255,7 +4020,13 @@ Return TRUE to allow the apply method to continue, or FALSE to prevent the apply
 
 =over 4
 
-A reference to some Perl code to run *after* applying the current record
+A reference to some Perl code to run *after* applying the current record.
+Your code will be passed a reference to a hash of info about the current record:
+
+ {
+    status          => a string, with possible values: 'inserted', 'changed'
+    primary_key     => the primary key of the record in question
+ }
 
 =back
 
@@ -3288,6 +4059,16 @@ for each record ( subsequent changes to the same record won't trigger this code 
 
 =back
 
+=head2 auto_apply
+
+=over 4
+
+A boolean that will cause datasheets to *automatically* apply changes if a new query is run
+while outstanding changes exist, or if the user tries to close a form with outstanding changes
+ ... ie NO question dialog will appear
+ 
+=back
+
 =head2 calc_fields
 
 =over 4
@@ -3300,7 +4081,7 @@ A hash of fieldnames / Perl expressions to provide calculated fields
 
 =over 4
 
-The size of the recordset slice ( in records ) to fetch into memory
+The size of the recordset slice ( in records ) to fetch into memory.
 ONLY change this BEFORE querying
 
 =back
@@ -3310,7 +4091,7 @@ ONLY change this BEFORE querying
 =over 4
 
 The name of a GtkSpinButton to use as the record spinner. The default is to use a
-widget called RecordSpiner. However there are a number of reasons why you may want to
+widget called RecordSpinner. However there are a number of reasons why you may want to
 override this. You can simply pass the name of a widget that *doesn't* exist ( ie NONE )
 to disable the use of a record spinner. Otherwise you may want to use a widget with a
 different name, for example if you have a number of Gtk2::Ex::DBI objects connected to
@@ -3340,6 +4121,16 @@ Disable automatic move() operations when the RecordSpinner is clicked
 =over 4
 
 Whether we allow updates to the recordset ( default = FALSE ; updates allowed )
+
+=back
+
+=head2 data_lock_field
+
+=over 4
+
+The name of a field that controls record locking. If this field contains a non-zero or not null value
+at the point of the on_current event, the record will be LOCKED from edits and deletes.
+See also the lock() and unlock() methods
 
 =back
 
@@ -3392,10 +4183,55 @@ Disable the 'find' item in the right-click menu of GtkText widgets ( ie disable 
 
 =back
 
+=head2 dont_update_keys
+
+=over 4
+
+Don't include primary keys in update statements. Some databases don't like that.
+
+=back
+
+=head2 widget_prefix
+
+=over 4
+
+A string to prefix to widget names when getting hold of them ( ie via Glade or Builder ).
+NOTE: we FIRST try without the widget prefix.
+
+=back
+
+=head2 auto_incrementing
+
+=over 4
+
+A flag ( default ON ) to indicate whether we should try to poll the last inserted ID after
+an insert.
+
+=back
+
 =head1 WIDGETS
 
 The widgets hash contains information particular to each managed widget. Each hash item in the widgets hash
 should be named after a widget in your Glade XML file. The following are possible keys for each widget:
+
+=head2 sequence_sql
+
+=over 4
+
+If you set this, it can be any SQL that can be executed and then fetched to return a value
+that will be used as a sequence. The value will be applied to the current widget. This will happen
+each time editing begins in a new record.
+
+=back
+
+=head2 sequence_dbh
+
+=over 4
+
+If you want your sequence_sql to be executed against a different connection to your main dbh,
+pass a sequence_dbh.
+
+=back
 
 =head2 sql_fieldname
 
@@ -3415,6 +4251,8 @@ Gtk2::Ex::DBI parses the select string and populates the sql_fieldname key of th
 =over 4
 
 This is a HASH of options to control numeric formatting. Possible keys are:
+
+=back
 
 =head2 decimal_places
 
@@ -3447,6 +4285,24 @@ if they aren't already specified:
 
 =back
 
+=head2 percentage
+
+=over 4
+
+Whether to convert values to percentage when rendering to a widget. Note that if the number hash exists for a widget,
+then Gtk2::Ex::DBI will *always* check for percentages, and convert when necessary, when fetching a value *from* a widget
+( ie whether the percentage key is set or not )
+
+=back
+
+=head2 separate_thousands
+
+=over 4
+
+Whether to separate each group of 3 digits with a comma before rendering to a widget. If the number hash exists, values
+will *always* have commas stripped from them when fetching a value *from* a widget ( ie whether the separate_thousands 
+key is set or not )
+
 =back
 
 =head2 date
@@ -3454,6 +4310,8 @@ if they aren't already specified:
 =over 4
 
 This is a HASH of options controlling date formatting. Possible options are:
+
+=back
 
 =head2 format
 
@@ -3494,11 +4352,86 @@ in the combo's entry and selecting 'refresh'. You will also get autocompletion s
 To make use of the automated combo setup functionality, create a key in the combos hash, with a name that matches
 the GtkComboBoxEntry's widget name in your glade xml file. Inside this key, create a hash with the following keys:
 
-=head2 fields
+=head2 sql
 
 =over 4
 
-An array of field definitions. Each field definition is a hash with the following keys:
+A hash of SQL related stuff. Possible keys are:
+
+=back
+
+=head2 select
+
+=over 4
+
+The select clause that defines the fields you want in your combo
+
+=back
+
+=head2 from
+
+=over 4
+
+The from clause
+
+=back
+
+=head2 where_object
+
+=over 4
+
+This can either be a where clause, or a hash with the following keys:
+
+=back
+
+=head2 where
+
+=over 4
+
+The where key should contain the where clause, with placeholders ( ? ) for each value.
+Using placeholders is particularly important if you're assembling a query based on
+values taken from a form, as users can initiate an SQL injection attack if you
+insert values directly into your where clause.
+
+=back
+
+=head2 bind_values
+
+=over 4
+
+bind_values should be an array of values, one for each placeholder in your where clause.
+
+=back
+
+=head2 order_by
+
+=over 4
+
+An 'order by' clause
+
+=back
+
+=head2 alternate_dbh
+
+=over 4
+
+A DBI handle to use instead of the current Gtk2::Ex::DBI DBI handle
+
+=back
+
+=head2 fields ( optional )
+
+=over 4
+
+An array of field definitions. Note that the fields array is now optional.
+If you ommit it, simply define a 'select' key in the SQL hash, and the
+fields will be automatically set up ( with Glib::String types for each column ).
+The only reason you'd really want to define a 'fields' array now is to set a
+cell_data_func.
+
+Each field definition is a hash with the following keys:
+
+=back
 
 =head2 name
 
@@ -3528,66 +4461,23 @@ else you pass in yourself.
 
 =back
 
-=back
+=head1 Class behaviour flags
 
-=back
-
-=head2 sql
+=head2 $Gtk2::Ex::DBI::highlight_ok_colour
 
 =over 4
 
-A hash of SQL related stuff. Possible keys are:
-
-=head2 from
-
-=over 4
-
-The from clause
+The colour to use in various places for 'ok' type highlighting. Currently this only affects
+the record status label, when the record is synchronised
 
 =back
 
-=head2 where_object
+=head2 $Gtk2::Ex::DBI::highlight_colour
 
 =over 4
 
-This can either be a where clause, or a hash with the following keys:
-
-=head2 where
-
-=over 4
-
-The where key should contain the where clause, with placeholders ( ? ) for each value.
-Using placeholders is particularly important if you're assembling a query based on
-values taken from a form, as users can initiate an SQL injection attack if you
-insert values directly into your where clause.
-
-=back
-
-=head2 bind_values
-
-=over 4
-
-bind_values should be an array of values, one for each placeholder in your where clause.
-
-=back
-
-=back
-
-=head2 order_by
-
-=over 4
-
-An 'order by' clause
-
-=back
-
-=back
-
-=head2 alternate_dbh
-
-=over 4
-
-A DBI handle to use instead of the current Gtk2::Ex::DBI DBI handle
+The colour to use in various places for 'warning' type highlighting. Currently this only affects
+the record status label, when the record is locked or changed.
 
 =back
 
@@ -3617,7 +4507,7 @@ Patches gladly accepted :)
 
 =head1 AUTHORS
 
-Daniel Kasak - dan@entropy.homelinux.org
+Daniel Kasak - d.j.kasak.dk@gmail.com
 
 =head1 CREDITS
 
@@ -3635,17 +4525,12 @@ Gtk2-Perl list
 
 =head1 Other cool things you should know about:
 
-This module is part of an umbrella 'Axis' project, which aims to make
+This module is part of an umbrella project, which aims to make
 Rapid Application Development of database apps using open-source tools a reality.
 The project includes:
 
   Gtk2::Ex::DBI                 - forms
   Gtk2::Ex::Datasheet::DBI      - datasheets
   PDF::ReportWriter             - reports
-
-All the above modules are available via cpan, or for more information, screenshots, etc, see:
-http://entropy.homelinux.org/axis
-
-=head1 Crank ON!
 
 =cut

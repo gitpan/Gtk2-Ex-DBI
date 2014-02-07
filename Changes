@@ -1,5 +1,23 @@
 CHANGELOG
 
+Version 2.30 released 08-Feb 2014
+
+    Added support for multi-column primary keys
+    Added support for sequences
+    Added support for Netezza
+    Added partial support for Oracle ( I didn't get much time to test it out )
+    Added support for prefixing widget names with a string ( helps separate multiple instances with common field names )
+    Added ability to skip primary keys in update statements
+    Added GtkBuilder support
+    7 years worth of other stuff I don't quite remember
+    Ported to Gtk3 ( coming soon )
+
+Version 2.2, not released ( oops )
+    Look for an SQL alias widget before checking for the primary key in apply()
+    Use $widget->set_value() for Gtk2::SpinButton, or some strange stuff happens to invisible widgets
+    Warn if set_widget_value() fails for combos because a value wan't in the model
+    Fixed some recursion in changed() for on_changed and on_initial_changed() callbacks
+	
 Version 2.1, released 01-Jul-2007
     
     Added debugging messages for signal connection / disconnection
